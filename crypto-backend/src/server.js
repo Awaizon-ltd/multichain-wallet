@@ -1,44 +1,62 @@
+// server.js
+"use strict";
+
+const dotenv = require("dotenv");
+dotenv.config();
+
 const express = require("express");
 const cors = require("cors");
-const dotenv = require("dotenv");
-
-dotenv.config();
 
 const app = express();
 const PORT = process.env.PORT || 3000;
 
+// ─── Middleware ───────────────────────────────────────────────────────────────
 app.use(cors());
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
-// ─── Routes ────────────────────────────────────────────────────────────────
-const tokenRoutes = require("./routes/tokenRoutes");
-const walletRoutes = require("./routes/walletRoutes");
-const swapRoutes = require("./routes/swapRoutes");
-const swapTrackingRoutes = require("./routes/swapTrackingRoutes"); // ← NEW
+// ─── Routes ───────────────────────────────────────────────────────────────────
+app.use("/api/tokens", require("./routes/tokenRoutes"));
+app.use("/api/wallets", require("./routes/walletRoutes"));
+app.use("/api/swap", require("./routes/swapRoutes"));
+app.use("/api/swap", require("./routes/swapTrackingRoutes"));
+app.use("/api/bridge", require("./routes/bridgeRoutes"));
+app.use("/api/banners", require("./routes/bannerRoutes"));
+app.use("/api/market", require("./routes/marketRoutes"));
 
-app.use("/api/tokens", tokenRoutes);
-app.use("/api/wallets", walletRoutes);
-app.use("/api/swap", swapRoutes);
-app.use("/api/swap", swapTrackingRoutes); // ← NEW  (shares /api/swap prefix)
-
-// ─── Health check ──────────────────────────────────────────────────────────
-app.get("/", (req, res) => {
+// ─── Health check ─────────────────────────────────────────────────────────────
+app.get("/", (_req, res) => {
   res.json({
     message: "Crypto Wallet Token Backend API",
-    version: "1.0.0",
+    version: "1.2.0",
     status: "running",
   });
 });
 
-// ─── Error handler ─────────────────────────────────────────────────────────
-const errorHandler = require("./middleware/errorHandler");
-app.use(errorHandler);
+// ─── Error handler ────────────────────────────────────────────────────────────
+app.use(require("./middleware/errorHandler"));
 
-app.listen(PORT, () => {
-  console.log(`🚀 Server running on port ${PORT}`);
-  console.log(`📍 http://localhost:${PORT}`);
-  console.log(
-    `🔑 0x API key: ${process.env.ZERO_EX_API_KEY ? "✅ set" : "❌ missing – add ZERO_EX_API_KEY to .env"}`,
-  );
+// ─── Process-level safety net ─────────────────────────────────────────────────
+process.on("unhandledRejection", (reason) => {
+  console.error("❌ Unhandled promise rejection:", reason);
 });
+
+// ─── Start ────────────────────────────────────────────────────────────────────
+const server = app.listen(PORT, "0.0.0.0", () => {
+  console.log(`🚀 Server running on port ${PORT}`);
+
+  // Warm the trending cache now and keep it warm, so no app request ever
+  // waits on CoinGecko for it.
+  require("./services/marketService").startMarketRefresh();
+});
+
+const gracefulShutdown = (signal) => {
+  console.log(`\n${signal} received — shutting down…`);
+  server.close(() => {
+    console.log("✅ HTTP server closed");
+    process.exit(0);
+  });
+};
+
+process.once("SIGINT", () => gracefulShutdown("SIGINT"));
+process.once("SIGTERM", () => gracefulShutdown("SIGTERM"));

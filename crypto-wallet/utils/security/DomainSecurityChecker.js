@@ -28,14 +28,15 @@ export class DomainSecurityChecker {
       ["arbiscan.io", { verified: true, category: "Explorer" }],
       ["optimistic.etherscan.io", { verified: true, category: "Explorer" }],
       ["pinksale.finance", { verified: true, category: "Launchpad" }],
-      // Mantle Ecosystem
-      ["refuel.mantle.xyz", { verified: true, category: "Gas Refuel" }],
-      ["app.mantle.xyz", { verified: true, category: "Bridge" }],
-      ["mantle.xyz", { verified: true, category: "Official" }],
-      ["merchantmoe.com", { verified: true, category: "DEX" }],
       ["minter.merkly.com", { verified: true, category: "Gas Refuel" }],
       ["merkly.com", { verified: true, category: "Cross-chain" }],
-      ["explorer.mantle.xyz", { verified: true, category: "Explorer" }],
+      // LI.FI (cross-chain bridge)
+      ["jumper.exchange", { verified: true, category: "Bridge" }],
+      ["li.fi", { verified: true, category: "Bridge" }],
+      // Arc / Robinhood Chain
+      ["arc.etherscan.io", { verified: true, category: "Explorer" }],
+      ["robinhoodchain.blockscout.com", { verified: true, category: "Explorer" }],
+      ["robinhood.com", { verified: true, category: "Official" }],
     ]);
 
     // Known malicious patterns
@@ -84,9 +85,8 @@ export class DomainSecurityChecker {
       "pinksale",
       "blur",
       "lido",
-      "mantle",
-      "merchantmoe",
       "merkly",
+      "robinhood",
     ];
   }
 

@@ -8,10 +8,12 @@ import {
   StyleSheet,
   Animated,
   Platform,
-  Alert,
   Easing,
 } from "react-native";
-import { SafeAreaProvider } from "react-native-safe-area-context";
+import {
+  SafeAreaProvider,
+  useSafeAreaInsets,
+} from "react-native-safe-area-context";
 import * as NavigationBar from "expo-navigation-bar";
 
 import { WalletProvider } from "./contexts/WalletContext";
@@ -26,6 +28,7 @@ import { AlertProvider } from "./contexts/AlertContext";
 
 // ─── Logo asset ────────────────────────────────────────────────────────────
 import Logo from "./assets/logo.png";
+import Alert from "./utils/Alert";
 
 // ─── Splash Screen ─────────────────────────────────────────────────────────
 const SplashScreen = ({ status, isDark, COLORS, onFadeOut, visible }) => {
@@ -162,6 +165,25 @@ const SplashScreen = ({ status, isDark, COLORS, onFadeOut, visible }) => {
   );
 };
 
+// Edge-to-edge lets the Android system nav bar draw over the app. Pad every
+// screen by the bottom inset so the tab bar, footers and buttons sit above it,
+// and paint that strip with the theme background so it reads as the nav bar.
+const SafeBottom = ({ children }) => {
+  const insets = useSafeAreaInsets();
+  const { COLORS } = useTheme();
+  return (
+    <View
+      style={{
+        flex: 1,
+        paddingBottom: insets.bottom,
+        backgroundColor: COLORS.background,
+      }}
+    >
+      {children}
+    </View>
+  );
+};
+
 // ─── App Content ────────────────────────────────────────────────────────────
 const AppContent = () => {
   const { COLORS, FONTS, isDark, isLoading: themeLoading } = useTheme();
@@ -177,15 +199,13 @@ const AppContent = () => {
 
   useEffect(() => {
     if (Platform.OS === "android" && !themeLoading) {
-      NavigationBar.setBackgroundColorAsync(COLORS.background);
       NavigationBar.setButtonStyleAsync(isDark ? "light" : "dark");
     }
-  }, [isDark, COLORS.background, themeLoading]);
+  }, [isDark, themeLoading]);
 
   const initializeApp = async () => {
     try {
       if (Platform.OS === "android") {
-        await NavigationBar.setBackgroundColorAsync(COLORS.background);
         await NavigationBar.setButtonStyleAsync(isDark ? "light" : "dark");
       }
       setStatusText("Loading database...");
@@ -220,7 +240,7 @@ const AppContent = () => {
   const handleGooglePlayUpdate = async (update) => {
     const isFlexible = (update.stalenessDays || 0) < 7;
     if (isFlexible) {
-      Alert.alert(
+      Alert(
         "Update Available",
         "A new version is available. Would you like to update now?",
         [
@@ -231,7 +251,7 @@ const AppContent = () => {
               try {
                 await UpdateChecker.startGooglePlayUpdate(update, true);
               } catch {
-                Alert.alert("Update Failed", "Please try again later.");
+                Alert("Update Failed", "Please try again later.");
               }
             },
           },
@@ -242,7 +262,7 @@ const AppContent = () => {
       try {
         await UpdateChecker.startGooglePlayUpdate(update, false);
       } catch {
-        Alert.alert(
+        Alert(
           "Update Required",
           "Please update from Google Play Store to continue.",
         );
@@ -251,7 +271,7 @@ const AppContent = () => {
   };
 
   const showOTAUpdateAlert = () => {
-    Alert.alert(
+    Alert(
       "Update Available",
       "A new update is ready to install. The app will restart.",
       [
@@ -262,7 +282,7 @@ const AppContent = () => {
             try {
               await UpdateChecker.installOTAUpdate();
             } catch {
-              Alert.alert("Update Failed", "Please try again later.");
+              Alert("Update Failed", "Please try again later.");
             }
           },
         },
@@ -297,7 +317,9 @@ const AppContent = () => {
                 </Text>
               </View>
             ) : (
-              <Navigation />
+              <SafeBottom>
+                <Navigation />
+              </SafeBottom>
             )}
           </View>
         )}
@@ -333,7 +355,9 @@ const AppContent = () => {
           </Text>
         </View>
       ) : (
-        <Navigation />
+        <SafeBottom>
+          <Navigation />
+        </SafeBottom>
       )}
     </>
   );

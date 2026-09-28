@@ -28,7 +28,7 @@ import Alert from "../../utils/Alert";
 
 const SettingsScreen = ({ navigation }) => {
   const { wallet, clearLocalWallet } = useWallet();
-  const { COLORS, SPACING, FONTS, isDark, toggleTheme } = useTheme();
+  const { COLORS, SPACING, FONTS, isDark, toggleTheme, accentColor } = useTheme();
   const [biometricEnabled, setBiometricEnabledState] = useState(false);
   const [biometricAvailable, setBiometricAvailable] = useState(false);
   const [biometricType, setBiometricType] = useState("Biometric");
@@ -577,6 +577,13 @@ const SettingsScreen = ({ navigation }) => {
           title="Currency"
           subtitle="USD"
           showArrow={false}
+        />
+        <MenuItem
+          iconName="color-palette-outline"
+          iconColor={accentColor ?? COLORS.primary}
+          title="Theme Color"
+          subtitle={accentColor ? `Custom · ${accentColor}` : "Default yellow-green"}
+          onPress={() => navigation.navigate("AccentColor")}
         />
         <ToggleMenuItem
           iconName={isDark ? "sunny-outline" : "moon-outline"}

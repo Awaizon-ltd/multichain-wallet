@@ -5,7 +5,6 @@ import { Alchemy, Network } from "alchemy-sdk";
 const ALCHEMY_API_KEYS = {
   ethereum: "tlYzVPHTMFIk9YDQyrzrQ",
   base: "tlYzVPHTMFIk9YDQyrzrQ",
-  mantle: "tlYzVPHTMFIk9YDQyrzrQ",
   arbitrum: "tlYzVPHTMFIk9YDQyrzrQ",
   polygon: "tlYzVPHTMFIk9YDQyrzrQ",
   avalanche: "tlYzVPHTMFIk9YDQyrzrQ",
@@ -16,7 +15,9 @@ const ALCHEMY_API_KEYS = {
 export const ALCHEMY_NETWORK_MAP = {
   1: Network.ETH_MAINNET,
   8453: Network.BASE_MAINNET,
-  5000: Network.MANTLE_MAINNET,
+  // Arc (5042) / Robinhood Chain (4663): not yet in alchemy-sdk's Network
+  // enum — see CHAINS_WITHOUT_NFT_API_SUPPORT / MANUAL_FETCH_CHAINS, which
+  // route around Alchemy entirely for these two chains.
   42161: Network.ARB_MAINNET,
   137: Network.MATIC_MAINNET,
   43114: Network.AVAX_MAINNET,

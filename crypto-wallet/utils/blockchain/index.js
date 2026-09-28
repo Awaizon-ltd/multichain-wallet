@@ -9,7 +9,7 @@ export {
   getProviderSafe,
   getCurrentBlockNumber,
   getNetworkInfo,
-} from "./providers";
+} from "./Providers";
 
 // Alchemy SDK utilities
 export {
@@ -19,7 +19,7 @@ export {
   getAlchemySupportedChainIds,
   getAlchemyNetwork,
   ALCHEMY_NETWORK_MAP,
-} from "./alchemy";
+} from "./Alchemy";
 
 // Balance utilities
 export {
@@ -29,7 +29,7 @@ export {
   getAllTokenBalances,
   getAllTokenBalancesMultiChain,
   hasBalance,
-} from "./balances";
+} from "./Balances";
 
 // Token utilities
 export {
@@ -43,7 +43,7 @@ export {
   isValidTokenAddress,
   formatTokenAmount,
   parseTokenAmount,
-} from "./tokens";
+} from "./Tokens";
 
 // NFT utilities
 export {
@@ -59,7 +59,7 @@ export {
   getNFTsForCollection,
   getNFTOwners,
   verifyNFTOwnership,
-} from "./nfts";
+} from "./NFTs";
 
 // Gas utilities
 export {
@@ -74,7 +74,7 @@ export {
   formatGasPrice,
   parseGasPrice,
   getDefaultGasLimit,
-} from "./gas";
+} from "./Gas";
 
 // Transaction utilities
 export {
@@ -92,16 +92,16 @@ export {
   sendRawTransaction,
   decodeTransactionData,
   getTransactionStatus,
-} from "./transactions";
+} from "./Transaction";
 
 // Re-export everything as default for backward compatibility
-import * as providers from "./providers";
-import * as alchemy from "./alchemy";
-import * as balances from "./balances";
-import * as tokens from "./tokens";
-import * as nfts from "./nfts";
-import * as gas from "./gas";
-import * as transactions from "./transactions";
+import * as providers from "./Providers";
+import * as alchemy from "./Alchemy";
+import * as balances from "./Balances";
+import * as tokens from "./Tokens";
+import * as nfts from "./NFTs";
+import * as gas from "./Gas";
+import * as transactions from "./Transaction";
 
 export default {
   ...providers,

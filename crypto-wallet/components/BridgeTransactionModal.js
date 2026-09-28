@@ -15,18 +15,17 @@ import { Ionicons } from "@expo/vector-icons";
 import { useTheme } from "../contexts/ThemeContext";
 import { useWallet } from "../contexts/WalletContext";
 import { useBridge } from "../hooks/useBridge";
-import { formatEther } from "ethers";
 import Alert from "../utils/Alert";
 
-/**
- * ✅ PIN Pad Component
- */
+/* =========================================================
+   PIN PAD
+========================================================= */
+
 const PinPad = ({ theme, onComplete, onCancel, error: externalError }) => {
   const styles = createStyles(theme);
   const [pin, setPin] = useState("");
   const [shakeAnimation] = useState(new Animated.Value(0));
   const [isSubmitting, setIsSubmitting] = useState(false);
-
   const PIN_LENGTH = 6;
 
   useEffect(() => {
@@ -34,7 +33,6 @@ const PinPad = ({ theme, onComplete, onCancel, error: externalError }) => {
       setPin("");
       setIsSubmitting(false);
       Vibration.vibrate([0, 100, 50, 100]);
-
       Animated.sequence([
         Animated.timing(shakeAnimation, {
           toValue: 10,
@@ -68,9 +66,7 @@ const PinPad = ({ theme, onComplete, onCancel, error: externalError }) => {
   useEffect(() => {
     if (pin.length === PIN_LENGTH && !isSubmitting) {
       setIsSubmitting(true);
-      setTimeout(() => {
-        onComplete(pin);
-      }, 100);
+      setTimeout(() => onComplete(pin), 100);
     }
   }, [pin, isSubmitting]);
 
@@ -88,83 +84,12 @@ const PinPad = ({ theme, onComplete, onCancel, error: externalError }) => {
     }
   };
 
-  const renderPinCircles = () => {
-    return (
-      <Animated.View
-        style={[
-          styles.pinCirclesContainer,
-          { transform: [{ translateX: shakeAnimation }] },
-        ]}
-      >
-        {[...Array(PIN_LENGTH)].map((_, index) => (
-          <View
-            key={index}
-            style={[
-              styles.pinCircle,
-              pin.length > index && styles.pinCircleFilled,
-            ]}
-          />
-        ))}
-      </Animated.View>
-    );
-  };
-
-  const renderKeypad = () => {
-    const keys = [
-      ["1", "2", "3"],
-      ["4", "5", "6"],
-      ["7", "8", "9"],
-      ["", "0", "backspace"],
-    ];
-
-    return (
-      <View style={styles.keypad}>
-        {keys.map((row, rowIndex) => (
-          <View key={rowIndex} style={styles.keypadRow}>
-            {row.map((key, keyIndex) => {
-              if (key === "") {
-                return <View key={keyIndex} style={styles.keypadButton} />;
-              }
-
-              if (key === "backspace") {
-                return (
-                  <TouchableOpacity
-                    key={keyIndex}
-                    style={styles.keypadButton}
-                    onPress={handleBackspace}
-                    disabled={pin.length === 0 || isSubmitting}
-                    activeOpacity={0.7}
-                  >
-                    <Ionicons
-                      name="backspace-outline"
-                      size={28}
-                      color={
-                        pin.length === 0 || isSubmitting
-                          ? theme.COLORS.textTertiary
-                          : theme.COLORS.text
-                      }
-                    />
-                  </TouchableOpacity>
-                );
-              }
-
-              return (
-                <TouchableOpacity
-                  key={keyIndex}
-                  style={styles.keypadButton}
-                  onPress={() => handlePress(key)}
-                  disabled={isSubmitting}
-                  activeOpacity={0.7}
-                >
-                  <Text style={styles.keypadButtonText}>{key}</Text>
-                </TouchableOpacity>
-              );
-            })}
-          </View>
-        ))}
-      </View>
-    );
-  };
+  const keys = [
+    ["1", "2", "3"],
+    ["4", "5", "6"],
+    ["7", "8", "9"],
+    ["", "0", "backspace"],
+  ];
 
   return (
     <View style={styles.pinPadContainer}>
@@ -202,123 +127,169 @@ const PinPad = ({ theme, onComplete, onCancel, error: externalError }) => {
         <View style={styles.pinErrorContainer} />
       )}
 
-      {renderPinCircles()}
-      {renderKeypad()}
+      <Animated.View
+        style={[
+          styles.pinCirclesContainer,
+          { transform: [{ translateX: shakeAnimation }] },
+        ]}
+      >
+        {[...Array(PIN_LENGTH)].map((_, i) => (
+          <View
+            key={i}
+            style={[styles.pinCircle, pin.length > i && styles.pinCircleFilled]}
+          />
+        ))}
+      </Animated.View>
+
+      <View style={styles.keypad}>
+        {keys.map((row, ri) => (
+          <View key={ri} style={styles.keypadRow}>
+            {row.map((key, ki) => {
+              if (key === "")
+                return <View key={ki} style={styles.keypadButton} />;
+              if (key === "backspace")
+                return (
+                  <TouchableOpacity
+                    key={ki}
+                    style={styles.keypadButton}
+                    onPress={handleBackspace}
+                    disabled={pin.length === 0 || isSubmitting}
+                    activeOpacity={0.7}
+                  >
+                    <Ionicons
+                      name="backspace-outline"
+                      size={28}
+                      color={
+                        pin.length === 0 || isSubmitting
+                          ? theme.COLORS.textTertiary
+                          : theme.COLORS.text
+                      }
+                    />
+                  </TouchableOpacity>
+                );
+              return (
+                <TouchableOpacity
+                  key={ki}
+                  style={styles.keypadButton}
+                  onPress={() => handlePress(key)}
+                  disabled={isSubmitting}
+                  activeOpacity={0.7}
+                >
+                  <Text style={styles.keypadButtonText}>{key}</Text>
+                </TouchableOpacity>
+              );
+            })}
+          </View>
+        ))}
+      </View>
     </View>
   );
 };
 
-/**
- * ✅ Main Bridge Transaction Modal
- */
+/* =========================================================
+   MAIN MODAL
+========================================================= */
+
 export const BridgeTransactionModal = ({
   visible,
   onClose,
   title = "Confirm Bridge",
   description = null,
-  bridgeParams,
+  quote,
   chainSymbol = "ETH",
+  fromChainName,
+  toChainName,
+  toSymbol,
+  buyAmountFormatted,
   onSuccess,
   onError,
 }) => {
   const theme = useTheme();
   const styles = createStyles(theme);
+
+  // WalletContext — createSignerForTransaction decrypts the wallet with the
+  // PIN and returns a one-time ethers Signer. The signer is kept in local
+  // state only for the duration of this modal session.
   const { createSignerForTransaction } = useWallet();
-  const {
-    executeBridge,
-    estimateGas,
-    gasInfo,
-    isEstimating,
-    error,
-    clearError,
-  } = useBridge();
+
+  const { executeBridge, error, clearError } = useBridge();
 
   const [step, setStep] = useState("unlock");
   const [passcodeError, setPasscodeError] = useState("");
   const [txReceipt, setTxReceipt] = useState(null);
-  const [tempSigner, setTempSigner] = useState(null);
+  const [signer, setSigner] = useState(null); // one-time signer from PIN
   const [status, setStatus] = useState("");
 
+  // Reset state every time the modal opens/closes
   useEffect(() => {
     if (visible) {
       setStep("unlock");
       setPasscodeError("");
       setTxReceipt(null);
-      setTempSigner(null);
+      setSigner(null);
       setStatus("");
       clearError();
     } else {
-      setTempSigner(null);
+      setSigner(null);
       setPasscodeError("");
       setStep("unlock");
       setStatus("");
     }
   }, [visible]);
 
+  /* ── PIN entry ──────────────────────────────────────────────────────────── */
   const handlePinComplete = async (passcode) => {
     try {
       setPasscodeError("");
-      const signer = await createSignerForTransaction(passcode);
-      setTempSigner(signer);
 
-      // Re-estimate gas with signer
-      if (bridgeParams) {
-        try {
-          await estimateGas({
-            ...bridgeParams,
-            signer,
-          });
-        } catch (gasErr) {
-          console.error(
-            "[BridgeTransactionModal] Gas estimation failed:",
-            gasErr,
-          );
-        }
-      }
-
+      // Decrypt the wallet and get a live ethers Signer
+      const walletSigner = await createSignerForTransaction(passcode);
+      setSigner(walletSigner);
       setStep("review");
     } catch (err) {
-      console.error("[BridgeTransactionModal] Failed to create signer:", err);
+      console.error("[BridgeTransactionModal] PIN failed:", err);
       setPasscodeError("Invalid passcode");
     }
   };
 
+  /* ── Confirm bridge ─────────────────────────────────────────────────────── */
   const handleConfirm = async () => {
-    if (!tempSigner) {
+    if (!signer) {
       Alert.alert("Error", "Please unlock your wallet first");
       setStep("unlock");
+      return;
+    }
+    if (!quote) {
+      Alert.alert("No Route", "This quote is no longer available — go back and try again");
       return;
     }
 
     setStep("processing");
 
     try {
+      // Pass the decrypted signer directly — it never touches the backend
       const receipt = await executeBridge({
-        ...bridgeParams,
-        signer: tempSigner,
-        onProgress: (message) => setStatus(message),
+        quote,
+        signer,
+        onProgress: (msg) => setStatus(msg),
       });
 
       setTxReceipt(receipt);
       setStep("success");
-      setTempSigner(null);
+      setSigner(null); // discard signer immediately after use
 
-      if (onSuccess) {
-        onSuccess(receipt);
-      }
+      onSuccess?.(receipt);
     } catch (err) {
       console.error("[BridgeTransactionModal] Bridge failed:", err);
       setStep("error");
-      setTempSigner(null);
-
-      if (onError) {
-        onError(err);
-      }
+      setSigner(null);
+      onError?.(err);
     }
   };
 
+  /* ── Navigation helpers ─────────────────────────────────────────────────── */
   const handleClose = () => {
-    setTempSigner(null);
+    setSigner(null);
     clearError();
     setPasscodeError("");
     setStep("unlock");
@@ -327,7 +298,7 @@ export const BridgeTransactionModal = ({
   };
 
   const handleRetry = () => {
-    setTempSigner(null);
+    setSigner(null);
     setStep("unlock");
     clearError();
     setPasscodeError("");
@@ -374,17 +345,18 @@ export const BridgeTransactionModal = ({
               {step === "review" && (
                 <ReviewStep
                   theme={theme}
-                  bridgeParams={bridgeParams}
-                  gasInfo={gasInfo}
+                  quote={quote}
                   chainSymbol={chainSymbol}
-                  isEstimating={isEstimating}
+                  toSymbol={toSymbol}
+                  fromChainName={fromChainName}
+                  toChainName={toChainName}
+                  buyAmountFormatted={buyAmountFormatted}
                   error={error}
                   onConfirm={handleConfirm}
                   onCancel={handleClose}
-                  hasSignerUnlocked={!!tempSigner}
+                  signerReady={!!signer}
                 />
               )}
-
               {step === "processing" && (
                 <ProcessingStep theme={theme} status={status} />
               )}
@@ -392,7 +364,8 @@ export const BridgeTransactionModal = ({
                 <SuccessStep
                   theme={theme}
                   receipt={txReceipt}
-                  bridgeParams={bridgeParams}
+                  fromChainName={fromChainName}
+                  toChainName={toChainName}
                   onClose={handleClose}
                 />
               )}
@@ -412,19 +385,22 @@ export const BridgeTransactionModal = ({
   );
 };
 
-/**
- * Review Step Component
- */
+/* =========================================================
+   REVIEW STEP
+========================================================= */
+
 const ReviewStep = ({
   theme,
-  bridgeParams,
-  gasInfo,
-  isEstimating,
+  quote,
   chainSymbol,
+  toSymbol,
+  fromChainName,
+  toChainName,
+  buyAmountFormatted,
   error,
   onConfirm,
   onCancel,
-  hasSignerUnlocked,
+  signerReady,
 }) => {
   const styles = createStyles(theme);
 
@@ -436,7 +412,7 @@ const ReviewStep = ({
 
       <Text style={styles.stepTitle}>Review Bridge</Text>
 
-      {hasSignerUnlocked && (
+      {signerReady && (
         <View style={styles.statusBadge}>
           <Text style={styles.statusBadgeText}>✓ Wallet Unlocked</Text>
         </View>
@@ -445,62 +421,42 @@ const ReviewStep = ({
       <View style={styles.detailsCard}>
         <DetailRow
           theme={theme}
-          label="Direction"
-          value={
-            bridgeParams.direction === "L1_TO_L2"
-              ? "Ethereum → Mantle"
-              : "Mantle → Ethereum"
-          }
+          label="Route"
+          value={`${fromChainName} → ${toChainName}`}
         />
-        <DetailRow
-          theme={theme}
-          label="Asset"
-          value={bridgeParams.assetType === "native" ? chainSymbol : "Token"}
-        />
-        <DetailRow
-          theme={theme}
-          label="Amount"
-          value={`${bridgeParams.amount} ${bridgeParams.assetType === "native" ? chainSymbol : ""}`}
-          highlight
-        />
-        {bridgeParams.assetType === "token" && (
-          <>
-            <DetailRow
-              theme={theme}
-              label="L1 Token"
-              value={bridgeParams.l1TokenAddress}
-              mono
-            />
-            <DetailRow
-              theme={theme}
-              label="L2 Token"
-              value={bridgeParams.l2TokenAddress}
-              mono
-            />
-          </>
+        <DetailRow theme={theme} label="Via" value={quote?.toolDetails?.name || quote?.tool || "LI.FI"} />
+        {buyAmountFormatted && (
+          <DetailRow
+            theme={theme}
+            label="You receive"
+            value={`≈ ${buyAmountFormatted} ${toSymbol || ""}`}
+            highlight
+          />
+        )}
+        {quote?.estimatedDurationSeconds != null && (
+          <DetailRow
+            theme={theme}
+            label="Est. time"
+            value={`~${Math.ceil(quote.estimatedDurationSeconds / 60)} min`}
+          />
         )}
       </View>
 
-      {isEstimating ? (
+      {quote?.gasCostUsd != null ? (
         <View style={styles.gasCard}>
-          <ActivityIndicator size="small" color={theme.COLORS.primary} />
-          <Text style={styles.gasEstimating}>Estimating gas...</Text>
-        </View>
-      ) : gasInfo ? (
-        <View style={styles.gasCard}>
-          <Text style={styles.gasCardTitle}>Gas Estimate</Text>
-          <DetailRow theme={theme} label="Gas Limit" value={gasInfo.gasLimit} />
+          <Text style={styles.gasCardTitle}>Fees</Text>
           <DetailRow
             theme={theme}
-            label="Gas Price"
-            value={`${parseFloat(gasInfo.gasPrice).toFixed(2)} Gwei`}
+            label="Network fee"
+            value={`≈ $${parseFloat(quote.gasCostUsd).toFixed(2)}`}
           />
-          <DetailRow
-            theme={theme}
-            label="Estimated Cost"
-            value={`${gasInfo.estimatedCostEth.toFixed(6)} ${chainSymbol}`}
-            highlight
-          />
+          {quote.feeCostUsd != null && (
+            <DetailRow
+              theme={theme}
+              label="Bridge fee"
+              value={`≈ $${parseFloat(quote.feeCostUsd).toFixed(2)}`}
+            />
+          )}
         </View>
       ) : error ? (
         <View style={styles.errorCard}>
@@ -517,10 +473,10 @@ const ReviewStep = ({
         <TouchableOpacity
           style={[
             styles.primaryButton,
-            (!hasSignerUnlocked || !!error) && styles.disabledButton,
+            (!signerReady || !!error) && styles.disabledButton,
           ]}
           onPress={onConfirm}
-          disabled={!hasSignerUnlocked || !!error}
+          disabled={!signerReady || !!error}
         >
           <Text style={styles.primaryButtonText}>Confirm</Text>
         </TouchableOpacity>
@@ -529,20 +485,21 @@ const ReviewStep = ({
   );
 };
 
+/* =========================================================
+   PROCESSING / SUCCESS / ERROR STEPS
+========================================================= */
+
 const ProcessingStep = ({ theme, status }) => {
   const styles = createStyles(theme);
-
   return (
     <View style={styles.stepContainer}>
       <View style={styles.iconContainer}>
         <ActivityIndicator size="large" color={theme.COLORS.primary} />
       </View>
-
       <Text style={styles.stepTitle}>Processing Bridge</Text>
       <Text style={styles.stepDescription}>
         {status || "Please wait while your bridge is being processed..."}
       </Text>
-
       <View style={styles.processingCard}>
         <Text style={styles.processingStep}>✓ Transaction submitted</Text>
         <Text style={styles.processingStep}>
@@ -553,27 +510,23 @@ const ProcessingStep = ({ theme, status }) => {
   );
 };
 
-const SuccessStep = ({ theme, receipt, bridgeParams, onClose }) => {
+const SuccessStep = ({ theme, receipt, fromChainName, toChainName, onClose }) => {
   const styles = createStyles(theme);
-
   return (
     <View style={styles.stepContainer}>
       <View style={styles.iconContainer}>
         <Text style={styles.icon}>✅</Text>
       </View>
-
-      <Text style={styles.stepTitle}>Bridge Successful!</Text>
+      <Text style={styles.stepTitle}>Bridge Submitted!</Text>
       <Text style={styles.stepDescription}>
-        {bridgeParams.direction === "L1_TO_L2"
-          ? "Your assets will arrive on Mantle in ~10 minutes"
-          : "Withdrawal initiated. Complete on Ethereum after 7-day challenge period"}
+        Your assets are on their way from {fromChainName} to {toChainName}. This
+        can take anywhere from a few minutes to a few hours depending on the route.
       </Text>
-
       <View style={styles.successCard}>
         <DetailRow
           theme={theme}
           label="Transaction Hash"
-          value={receipt?.hash || "N/A"}
+          value={receipt?.hash || receipt?.transactionHash || "N/A"}
           mono
         />
         <DetailRow
@@ -582,7 +535,6 @@ const SuccessStep = ({ theme, receipt, bridgeParams, onClose }) => {
           value={receipt?.blockNumber?.toString() || "N/A"}
         />
       </View>
-
       <TouchableOpacity style={styles.primaryButton} onPress={onClose}>
         <Text style={styles.primaryButtonText}>Done</Text>
       </TouchableOpacity>
@@ -592,27 +544,22 @@ const SuccessStep = ({ theme, receipt, bridgeParams, onClose }) => {
 
 const ErrorStep = ({ theme, error, onRetry, onClose }) => {
   const styles = createStyles(theme);
-
   return (
     <View style={styles.stepContainer}>
       <View style={styles.iconContainer}>
         <Text style={styles.icon}>❌</Text>
       </View>
-
       <Text style={styles.stepTitle}>Bridge Failed</Text>
-
       <View style={styles.errorCard}>
         <Text style={styles.errorCardTitle}>{error?.title || "Error"}</Text>
         <Text style={styles.errorCardMessage}>
           {error?.message || "An unexpected error occurred"}
         </Text>
       </View>
-
       <View style={styles.buttonRow}>
         <TouchableOpacity style={styles.secondaryButton} onPress={onClose}>
           <Text style={styles.secondaryButtonText}>Close</Text>
         </TouchableOpacity>
-
         {error?.type !== "cancelled" && (
           <TouchableOpacity style={styles.primaryButton} onPress={onRetry}>
             <Text style={styles.primaryButtonText}>Retry</Text>
@@ -623,6 +570,10 @@ const ErrorStep = ({ theme, error, onRetry, onClose }) => {
   );
 };
 
+/* =========================================================
+   DETAIL ROW
+========================================================= */
+
 const DetailRow = ({
   theme,
   label,
@@ -631,7 +582,6 @@ const DetailRow = ({
   mono = false,
 }) => {
   const styles = createStyles(theme);
-
   return (
     <View style={styles.detailRow}>
       <Text style={styles.detailLabel}>{label}</Text>
@@ -650,14 +600,15 @@ const DetailRow = ({
   );
 };
 
+/* =========================================================
+   STYLES
+========================================================= */
+
 const createStyles = (theme) =>
   StyleSheet.create({
-    fullScreenContainer: {
-      flex: 1,
-      backgroundColor: theme.COLORS.background,
-    },
+    fullScreenContainer: { flex: 1, backgroundColor: theme.COLORS.background },
 
-    // PIN Pad Styles
+    // PIN Pad
     pinPadContainer: {
       flex: 1,
       backgroundColor: theme.COLORS.background,
@@ -667,9 +618,7 @@ const createStyles = (theme) =>
       paddingHorizontal: theme.SPACING.xs,
       alignItems: "flex-start",
     },
-    pinCancelButton: {
-      padding: theme.SPACING.sm,
-    },
+    pinCancelButton: { padding: theme.SPACING.sm },
     pinIconContainer: {
       alignItems: "center",
       marginTop: 40,
@@ -761,7 +710,7 @@ const createStyles = (theme) =>
       color: theme.COLORS.text,
     },
 
-    // Modal Container
+    // Modal
     modalContainer: {
       flex: 1,
       backgroundColor: theme.COLORS.background,
@@ -782,9 +731,7 @@ const createStyles = (theme) =>
       fontWeight: "bold",
       color: theme.COLORS.text,
     },
-    closeButton: {
-      padding: theme.SPACING.sm,
-    },
+    closeButton: { padding: theme.SPACING.sm },
     closeButtonText: {
       fontSize: theme.FONTS.sizes.xl,
       color: theme.COLORS.textSecondary,
@@ -800,16 +747,11 @@ const createStyles = (theme) =>
       marginBottom: theme.SPACING.xs,
       lineHeight: 22,
     },
-    stepContainer: {
-      paddingVertical: theme.SPACING.md,
-    },
-    iconContainer: {
-      alignItems: "center",
-      marginBottom: theme.SPACING.xs,
-    },
-    icon: {
-      fontSize: 64,
-    },
+
+    // Steps
+    stepContainer: { paddingVertical: theme.SPACING.md },
+    iconContainer: { alignItems: "center", marginBottom: theme.SPACING.xs },
+    icon: { fontSize: 64 },
     stepTitle: {
       fontSize: theme.FONTS.sizes.xl,
       fontWeight: "bold",
@@ -837,6 +779,8 @@ const createStyles = (theme) =>
       fontWeight: "600",
       color: theme.COLORS.success,
     },
+
+    // Cards
     detailsCard: {
       backgroundColor: theme.COLORS.surface,
       borderRadius: theme.BORDER_RADIUS.md,
@@ -902,6 +846,8 @@ const createStyles = (theme) =>
       color: theme.COLORS.textSecondary,
       marginBottom: theme.SPACING.sm,
     },
+
+    // Detail row
     detailRow: {
       flexDirection: "row",
       justifyContent: "space-between",
@@ -919,14 +865,13 @@ const createStyles = (theme) =>
       flex: 2,
       textAlign: "right",
     },
-    detailValueHighlight: {
-      color: theme.COLORS.primary,
-      fontWeight: "bold",
-    },
+    detailValueHighlight: { color: theme.COLORS.primary, fontWeight: "bold" },
     detailValueMono: {
       fontFamily: "monospace",
       fontSize: theme.FONTS.sizes.xs,
     },
+
+    // Buttons
     buttonRow: {
       flexDirection: "row",
       gap: theme.SPACING.md,
@@ -960,9 +905,7 @@ const createStyles = (theme) =>
       fontWeight: "bold",
       color: theme.COLORS.text,
     },
-    disabledButton: {
-      opacity: 0.5,
-    },
+    disabledButton: { opacity: 0.5 },
   });
 
 export default BridgeTransactionModal;

@@ -7,6 +7,11 @@ import {
 import { wordlist } from "@scure/bip39/wordlists/english";
 import { APP_CONFIG } from "../constants/Config";
 import { SUPPORTED_CHAINS } from "../constants/Chain";
+import { createProviderForChain } from "./blockchain/Providers";
+import {
+  getNativeBalance as getCachedNativeBalance,
+  getNativeBalancesMultiChain,
+} from "./blockchain/Balances";
 
 /**
  * Generate a new mnemonic phrase
@@ -98,12 +103,6 @@ export const createAccountFromPrivateKey = (privateKey) => {
  * @param {object} chain - Chain configuration
  * @returns {ethers.JsonRpcProvider} JSON-RPC provider
  */
-export const createProviderForChain = (chain) => {
-  return new ethers.JsonRpcProvider(chain.rpcUrl, {
-    chainId: chain.id,
-    name: chain.name,
-  });
-};
 
 /**
  * Create a wallet instance with provider
@@ -123,16 +122,15 @@ export const createWalletWithProvider = (privateKey, chain) => {
  * @param {object} chain - Chain configuration
  * @returns {Promise<object>} Balance in wei and formatted with chain info
  */
+// NOTE: routes through utils/blockchain/Balances.js's cached getNativeBalance
+// (30s TTL, stale-while-revalidate) instead of calling provider.getBalance()
+// directly — this one function used to fire an uncached Alchemy request on
+// every Home mount / pull-to-refresh, for every chain, every time.
 export const getBalance = async (address, chain) => {
   try {
-    const provider = createProviderForChain(chain);
-    // Always fetch from the latest block to avoid stale data
-    const balance = await provider.getBalance(address, "latest");
-
+    const balance = await getCachedNativeBalance(address, chain);
     return {
-      wei: balance.toString(),
-      formatted: ethers.formatEther(balance),
-      symbol: chain.symbol,
+      ...balance,
       chainId: chain.id,
       chainName: chain.name,
     };
@@ -143,42 +141,22 @@ export const getBalance = async (address, chain) => {
 };
 
 /**
- * Get balances for an address across all supported chains
+ * Get balances for an address across all supported chains.
+ * Cached + deduplicated per chain via utils/blockchain/Balances.js — calling
+ * this repeatedly (e.g. on every Home screen focus) does not refire Alchemy
+ * requests within the cache TTL.
  * @param {string} address - Wallet address
  * @returns {Promise<object>} Balances keyed by chain ID with chain info
  */
 export const getAllBalances = async (address) => {
+  const chains = Object.values(SUPPORTED_CHAINS);
+  const results = await getNativeBalancesMultiChain(address, chains);
+
   const balances = {};
-
-  const balancePromises = Object.values(SUPPORTED_CHAINS).map(async (chain) => {
-    try {
-      const balance = await getBalance(address, chain);
-      return {
-        chainId: chain.id,
-        balance,
-      };
-    } catch (error) {
-      console.error(`Error fetching balance for ${chain.name}:`, error);
-      return {
-        chainId: chain.id,
-        balance: {
-          wei: "0",
-          formatted: "0",
-          symbol: chain.symbol,
-          chainId: chain.id,
-          chainName: chain.name,
-        },
-      };
-    }
+  // getNativeBalancesMultiChain returns an object keyed by chainId, not an array
+  Object.values(results).forEach(({ chainId, chainName, error, ...balance }) => {
+    balances[chainId] = { ...balance, chainId, chainName };
   });
-
-  const results = await Promise.all(balancePromises);
-
-  // Convert array to object keyed by chainId
-  results.forEach(({ chainId, balance }) => {
-    balances[chainId] = balance;
-  });
-
   return balances;
 };
 

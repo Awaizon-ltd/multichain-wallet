@@ -1,0 +1,4 @@
+# Keep LF everywhere so scripts and shebangs work on Linux
+* text=auto eol=lf
+*.png binary
+*.jpg binary

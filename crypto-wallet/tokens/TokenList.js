@@ -1,8 +1,10 @@
 // Unified Token List
-// Combines tokens from Ethereum, Mantle, Arbitrum, Polygon, Avalanche, and BSC
+// Combines curated tokens from Ethereum, Arbitrum, Polygon, Avalanche, and BSC.
+// Arc (5042) and Robinhood Chain (4663) have no curated list here yet —
+// getTokensByChain() already returns [] gracefully for unmapped chains;
+// add ./tokens/arc.js / ./tokens/robinhood.js here once one exists.
 
 import { ethereumTokens, ethereumMetadata } from "./tokens/mainnet.js";
-import { mantleTokens, mantleMetadata } from "./tokens/mantle.js";
 import { arbitrumTokens, arbitrumMetadata } from "./tokens/arbitrum.js";
 import { polygonTokens, polygonMetadata } from "./tokens/polygon.js";
 import { avalancheTokens, avalancheMetadata } from "./tokens/avalanche.js";
@@ -20,11 +22,6 @@ export const tokenListConfig = {
       chainId: 1,
       name: "Ethereum Mainnet",
       tokens: ethereumTokens.length,
-    },
-    {
-      chainId: 5000,
-      name: "Mantle Network",
-      tokens: mantleTokens.length,
     },
     {
       chainId: 42161,
@@ -54,7 +51,6 @@ export const tokenListConfig = {
  */
 export const allTokens = [
   ...ethereumTokens,
-  ...mantleTokens,
   ...arbitrumTokens,
   ...polygonTokens,
   ...avalancheTokens,
@@ -66,7 +62,6 @@ export const allTokens = [
  */
 export const tokensByChain = {
   1: ethereumTokens,
-  5000: mantleTokens,
   42161: arbitrumTokens,
   137: polygonTokens,
   43114: avalancheTokens,
@@ -78,7 +73,6 @@ export const tokensByChain = {
  */
 export const chainMetadata = {
   1: ethereumMetadata,
-  5000: mantleMetadata,
   42161: arbitrumMetadata,
   137: polygonMetadata,
   43114: avalancheMetadata,
@@ -136,12 +130,15 @@ export function getTokenByAddress(address, chainId) {
 }
 
 /**
- * Get tokens by tag (Mantle only)
+ * Get tokens by tag, within a single chain's list
  * @param {string} tag - Tag to filter by (e.g., "Top", "Stablecoins", "DeFi")
+ * @param {number} chainId - Chain ID whose list to search
  * @returns {Array} Tokens with the specified tag
  */
-export function getTokensByTag(tag) {
-  return mantleTokens.filter((token) => token.tags && token.tags.includes(tag));
+export function getTokensByTag(tag, chainId) {
+  return getTokensByChain(chainId).filter(
+    (token) => token.tags && token.tags.includes(tag),
+  );
 }
 
 /**
@@ -182,21 +179,10 @@ export function getStatistics() {
   const commonTokens = getCommonTokens();
   const commonSymbols = Object.keys(commonTokens);
 
-  // Count tags (Mantle only)
-  const tagCounts = {};
-  mantleTokens.forEach((token) => {
-    if (token.tags) {
-      token.tags.forEach((tag) => {
-        tagCounts[tag] = (tagCounts[tag] || 0) + 1;
-      });
-    }
-  });
-
   return {
     totalTokens: allTokens.length,
     tokensByChain: {
       ethereum: ethereumTokens.length,
-      mantle: mantleTokens.length,
       arbitrum: arbitrumTokens.length,
       polygon: polygonTokens.length,
       avalanche: avalancheTokens.length,
@@ -206,18 +192,11 @@ export function getStatistics() {
       count: commonSymbols.length,
       symbols: commonSymbols.sort(),
     },
-    mantleTags: tagCounts,
     chains: [
       {
         chainId: 1,
         name: "Ethereum Mainnet",
         tokenCount: ethereumTokens.length,
-      },
-      {
-        chainId: 5000,
-        name: "Mantle Network",
-        tokenCount: mantleTokens.length,
-        tags: Object.keys(tagCounts),
       },
       { chainId: 42161, name: "Arbitrum", tokenCount: arbitrumTokens.length },
       { chainId: 137, name: "Polygon", tokenCount: polygonTokens.length },

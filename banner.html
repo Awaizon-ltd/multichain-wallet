@@ -1,0 +1,723 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Banner Admin — Awarizon</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link href="https://fonts.googleapis.com/css2?family=Syne:wght@700;800&family=DM+Sans:wght@400;500;600&display=swap" rel="stylesheet" />
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  :root {
+    --bg:        #101010;
+    --surface:   #1c1b19;
+    --card:      #1c1b19;
+    --cardHigh:  #242220;
+    --border:    #3D2E0A;
+    --borderMid: #5C4510;
+    --divider:   #261F08;
+    --text:      #F5EDD8;
+    --textMuted: #C9A96E;
+    --textDim:   #8C7040;
+    --primary:   #F7C84A;
+    --primaryDk: #F0A500;
+    --primaryLt: #FFE080;
+    --mutedAmber:#3D2E00;
+    --success:   #66BB6A;
+    --error:     #EF5350;
+    --radius:    10px;
+    --radiusMd:  14px;
+    --radiusLg:  20px;
+  }
+
+  html, body { height: 100%; background: var(--bg); color: var(--text); font-family: 'DM Sans', sans-serif; font-size: 15px; }
+
+  /* ── Layout ────────────────────────────────────────────── */
+  .app { display: flex; flex-direction: column; min-height: 100vh; }
+
+  header {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 0 32px; height: 64px;
+    background: var(--surface);
+    border-bottom: 1px solid var(--border);
+    position: sticky; top: 0; z-index: 100;
+  }
+  .logo { font-family: 'Syne', sans-serif; font-size: 20px; font-weight: 800; color: var(--primary); letter-spacing: -0.5px; }
+  .logo span { color: var(--textMuted); font-weight: 700; font-size: 14px; margin-left: 10px; }
+
+  .api-bar { display: flex; align-items: center; gap: 8px; }
+  .api-bar label { font-size: 12px; color: var(--textDim); }
+  .api-bar input {
+    background: var(--bg); border: 1px solid var(--border); color: var(--text);
+    padding: 6px 12px; border-radius: var(--radius); font-size: 13px; width: 260px;
+    font-family: 'DM Sans', sans-serif;
+  }
+  .api-bar input:focus { outline: none; border-color: var(--primary); }
+  .status-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--textDim); flex-shrink: 0; transition: background .3s; }
+  .status-dot.ok  { background: var(--success); }
+  .status-dot.err { background: var(--error); }
+
+  main { flex: 1; padding: 40px 32px; max-width: 1100px; margin: 0 auto; width: 100%; }
+
+  .page-title { font-family: 'Syne', sans-serif; font-size: 28px; font-weight: 800; color: var(--text); margin-bottom: 6px; }
+  .page-sub   { color: var(--textMuted); font-size: 14px; margin-bottom: 32px; }
+
+  /* ── Slots grid ────────────────────────────────────────── */
+  .slots { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 20px; }
+
+  .slot {
+    border-radius: var(--radiusMd); overflow: hidden;
+    border: 1px solid var(--border);
+    background: var(--card);
+    transition: border-color .2s;
+    position: relative;
+  }
+  .slot:hover { border-color: var(--borderMid); }
+
+  /* Empty slot */
+  .slot-empty {
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    min-height: 200px; cursor: pointer; gap: 12px;
+    border: 1.5px dashed var(--border);
+    background: transparent;
+    transition: border-color .2s, background .2s;
+  }
+  .slot-empty:hover { border-color: var(--primary); background: var(--mutedAmber); }
+  .slot-empty .plus {
+    width: 44px; height: 44px; border-radius: 50%; background: var(--mutedAmber);
+    display: flex; align-items: center; justify-content: center;
+    font-size: 22px; color: var(--primary);
+    transition: background .2s;
+  }
+  .slot-empty:hover .plus { background: var(--primary); color: var(--bg); }
+  .slot-empty .slot-label { font-size: 13px; color: var(--textMuted); }
+  .slot-num {
+    position: absolute; top: 10px; left: 10px;
+    font-size: 11px; font-weight: 600; color: var(--textDim);
+    background: var(--divider); border-radius: 4px; padding: 2px 7px;
+  }
+
+  /* Filled slot */
+  .slot-filled { cursor: default; }
+  .slot-thumb { width: 100%; height: 150px; object-fit: cover; display: block; }
+  .slot-info { padding: 14px 16px 12px; }
+  .slot-info-top { display: flex; align-items: flex-start; justify-content: space-between; gap: 8px; margin-bottom: 6px; }
+  .slot-title { font-family: 'Syne', sans-serif; font-size: 15px; font-weight: 700; color: var(--text); line-height: 1.3; flex: 1; }
+  .badge-pill {
+    font-size: 10px; font-weight: 700; letter-spacing: .8px; text-transform: uppercase;
+    background: var(--primary); color: var(--bg); padding: 2px 8px; border-radius: 4px;
+    white-space: nowrap; flex-shrink: 0;
+  }
+  .slot-sub { font-size: 12px; color: var(--textMuted); margin-bottom: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+  .slot-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+  .btn { border: none; cursor: pointer; font-family: 'DM Sans', sans-serif; border-radius: var(--radius); transition: opacity .15s, background .15s; font-size: 13px; font-weight: 600; display: inline-flex; align-items: center; gap: 5px; }
+  .btn:active { opacity: .8; }
+  .btn-sm { padding: 6px 14px; }
+  .btn-primary { background: var(--primary); color: var(--bg); }
+  .btn-primary:hover { background: var(--primaryLt); }
+  .btn-ghost { background: var(--mutedAmber); color: var(--primary); border: 1px solid var(--border); }
+  .btn-ghost:hover { background: var(--border); }
+  .btn-danger { background: rgba(239,83,80,.15); color: var(--error); border: 1px solid rgba(239,83,80,.25); }
+  .btn-danger:hover { background: rgba(239,83,80,.25); }
+
+  .toggle-wrap { display: flex; align-items: center; gap: 8px; margin-left: auto; }
+  .toggle-label { font-size: 12px; color: var(--textMuted); }
+  .toggle {
+    position: relative; width: 36px; height: 20px; cursor: pointer;
+  }
+  .toggle input { opacity: 0; width: 0; height: 0; position: absolute; }
+  .toggle-track {
+    position: absolute; inset: 0;
+    background: var(--divider); border-radius: 10px; transition: background .2s;
+    border: 1px solid var(--border);
+  }
+  .toggle input:checked + .toggle-track { background: var(--primary); border-color: var(--primaryDk); }
+  .toggle-thumb {
+    position: absolute; top: 2px; left: 2px;
+    width: 14px; height: 14px; border-radius: 50%; background: var(--textDim); transition: transform .2s, background .2s;
+  }
+  .toggle input:checked ~ .toggle-thumb { transform: translateX(16px); background: var(--bg); }
+
+  /* ── Slide Panel ───────────────────────────────────────── */
+  .overlay {
+    position: fixed; inset: 0; background: rgba(0,0,0,.6);
+    opacity: 0; pointer-events: none; transition: opacity .25s; z-index: 200;
+  }
+  .overlay.open { opacity: 1; pointer-events: all; }
+
+  .panel {
+    position: fixed; top: 0; right: 0; bottom: 0; width: 480px;
+    background: var(--surface); border-left: 1px solid var(--border);
+    transform: translateX(100%); transition: transform .3s cubic-bezier(.4,0,.2,1);
+    z-index: 201; display: flex; flex-direction: column;
+    overflow: hidden;
+  }
+  .panel.open { transform: translateX(0); }
+
+  .panel-head {
+    padding: 20px 24px; border-bottom: 1px solid var(--border);
+    display: flex; align-items: center; justify-content: space-between; flex-shrink: 0;
+  }
+  .panel-head h2 { font-family: 'Syne', sans-serif; font-size: 18px; font-weight: 800; color: var(--text); }
+  .panel-head .slot-badge { font-size: 12px; background: var(--mutedAmber); color: var(--primary); padding: 3px 10px; border-radius: 6px; border: 1px solid var(--border); }
+  .close-btn { background: none; border: none; cursor: pointer; color: var(--textMuted); font-size: 22px; line-height: 1; padding: 4px; transition: color .15s; }
+  .close-btn:hover { color: var(--text); }
+
+  .panel-body { flex: 1; overflow-y: auto; padding: 24px; display: flex; flex-direction: column; gap: 20px; }
+
+  /* Image upload zone */
+  .upload-zone {
+    width: 100%; height: 160px; border-radius: var(--radiusMd);
+    border: 2px dashed var(--border); background: var(--bg);
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    gap: 8px; cursor: pointer; transition: border-color .2s, background .2s;
+    position: relative; overflow: hidden;
+  }
+  .upload-zone:hover, .upload-zone.drag { border-color: var(--primary); background: var(--mutedAmber); }
+  .upload-zone img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; border-radius: calc(var(--radiusMd) - 2px); }
+  .upload-zone .upload-overlay {
+    position: absolute; inset: 0; background: rgba(0,0,0,.5); display: flex; flex-direction: column;
+    align-items: center; justify-content: center; gap: 6px; opacity: 0; transition: opacity .2s;
+  }
+  .upload-zone:hover .upload-overlay { opacity: 1; }
+  .upload-icon { font-size: 28px; color: var(--primary); }
+  .upload-text { font-size: 13px; color: var(--textMuted); }
+  .upload-hint { font-size: 11px; color: var(--textDim); }
+  #fileInput { display: none; }
+
+  /* Form fields */
+  .field { display: flex; flex-direction: column; gap: 6px; }
+  .field label { font-size: 12px; font-weight: 600; color: var(--textMuted); text-transform: uppercase; letter-spacing: .5px; }
+  .field input, .field textarea, .field select {
+    background: var(--bg); border: 1px solid var(--border); color: var(--text);
+    padding: 10px 14px; border-radius: var(--radius); font-size: 14px;
+    font-family: 'DM Sans', sans-serif; transition: border-color .2s;
+  }
+  .field input:focus, .field textarea:focus, .field select:focus { outline: none; border-color: var(--primary); }
+  .field textarea { resize: vertical; min-height: 90px; }
+  .field select option { background: var(--surface); }
+  .field-row { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+  .char-count { font-size: 11px; color: var(--textDim); text-align: right; margin-top: 2px; }
+
+  /* Preview card */
+  .preview-section { border-top: 1px solid var(--divider); padding-top: 20px; }
+  .preview-label { font-size: 12px; font-weight: 600; color: var(--textMuted); text-transform: uppercase; letter-spacing: .5px; margin-bottom: 10px; }
+  .preview-card {
+    width: 100%; height: 140px; border-radius: var(--radius); overflow: hidden;
+    position: relative; background: var(--cardHigh);
+  }
+  .preview-card img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
+  .preview-scrim { position: absolute; inset: 0; background: rgba(26,14,0,.52); }
+  .preview-strip { position: absolute; bottom: 0; left: 0; right: 0; height: 3px; background: var(--primaryDk); }
+  .preview-badge { position: absolute; top: 10px; right: 10px; background: var(--primary); color: var(--bg); font-size: 9px; font-weight: 800; letter-spacing: .8px; text-transform: uppercase; padding: 2px 7px; border-radius: 4px; }
+  .preview-text { position: absolute; bottom: 16px; left: 12px; right: 40px; }
+  .preview-sub { font-size: 9px; font-weight: 700; letter-spacing: .7px; text-transform: uppercase; color: var(--primaryLt); margin-bottom: 3px; }
+  .preview-title { font-family: 'Syne', sans-serif; font-size: 14px; font-weight: 800; color: #fff; line-height: 1.2; }
+
+  /* Panel footer */
+  .panel-footer {
+    padding: 16px 24px; border-top: 1px solid var(--border); flex-shrink: 0;
+    display: flex; align-items: center; gap: 10px;
+  }
+  .btn-full { flex: 1; justify-content: center; padding: 12px; }
+
+  /* Toast */
+  .toast {
+    position: fixed; bottom: 28px; left: 50%; transform: translateX(-50%) translateY(16px);
+    background: var(--cardHigh); border: 1px solid var(--border); color: var(--text);
+    padding: 10px 20px; border-radius: 100px; font-size: 14px; z-index: 999;
+    opacity: 0; transition: opacity .2s, transform .2s; pointer-events: none;
+    display: flex; align-items: center; gap: 8px;
+  }
+  .toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+  .toast.success .toast-dot { background: var(--success); }
+  .toast.error   .toast-dot { background: var(--error); }
+  .toast-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
+
+  /* Confirm dialog */
+  .dialog-wrap {
+    position: fixed; inset: 0; background: rgba(0,0,0,.65); z-index: 300;
+    display: none; align-items: center; justify-content: center;
+  }
+  .dialog-wrap.open { display: flex; }
+  .dialog {
+    background: var(--surface); border: 1px solid var(--border); border-radius: var(--radiusLg);
+    padding: 28px; max-width: 360px; width: 90%; text-align: center;
+  }
+  .dialog h3 { font-family: 'Syne', sans-serif; font-size: 18px; font-weight: 800; color: var(--text); margin-bottom: 10px; }
+  .dialog p { color: var(--textMuted); font-size: 14px; line-height: 1.6; margin-bottom: 24px; }
+  .dialog-btns { display: flex; gap: 10px; justify-content: center; }
+
+  /* Loading skeleton */
+  .skeleton {
+    background: linear-gradient(90deg, var(--card) 25%, var(--cardHigh) 50%, var(--card) 75%);
+    background-size: 200% 100%; animation: shimmer 1.4s infinite; border-radius: var(--radius);
+  }
+  @keyframes shimmer { 0% { background-position: 200% 0; } 100% { background-position: -200% 0; } }
+
+  .empty-state { text-align: center; padding: 60px 20px; color: var(--textMuted); }
+  .empty-state .big { font-size: 40px; margin-bottom: 12px; }
+
+  ::-webkit-scrollbar { width: 6px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+
+  @media (max-width: 540px) {
+    header { padding: 0 16px; }
+    main { padding: 24px 16px; }
+    .panel { width: 100%; }
+    .api-bar input { width: 160px; }
+  }
+</style>
+</head>
+<body>
+<div class="app">
+  <!-- Header -->
+  <header>
+    <div class="logo">Awarizon <span>Banner Admin</span></div>
+    <div class="api-bar">
+      <label>API</label>
+      <input type="text" id="apiUrlInput" value="http://192.168.0.219:3000/api" placeholder="http://localhost:3000/api" />
+      <div class="status-dot" id="statusDot"></div>
+    </div>
+  </header>
+
+  <!-- Main -->
+  <main>
+    <h1 class="page-title">Announcements</h1>
+    <p class="page-sub">Manage up to 5 rotating banner slots displayed in your app.</p>
+    <div class="slots" id="slotsGrid">
+      <!-- populated by JS -->
+    </div>
+  </main>
+</div>
+
+<!-- Overlay -->
+<div class="overlay" id="overlay" onclick="closePanel()"></div>
+
+<!-- Side Panel -->
+<div class="panel" id="panel">
+  <div class="panel-head">
+    <h2 id="panelTitle">New Banner</h2>
+    <div style="display:flex;align-items:center;gap:10px;">
+      <span class="slot-badge" id="panelSlotLabel">Slot —</span>
+      <button class="close-btn" onclick="closePanel()">×</button>
+    </div>
+  </div>
+
+  <div class="panel-body">
+    <!-- Image upload -->
+    <div>
+      <div class="upload-zone" id="uploadZone" onclick="triggerFileInput()" ondragover="handleDragOver(event)" ondragleave="handleDragLeave(event)" ondrop="handleDrop(event)">
+        <div class="upload-icon">⬆</div>
+        <div class="upload-text">Click or drag & drop image</div>
+        <div class="upload-hint">JPEG, PNG, WebP, GIF — max 5 MB</div>
+        <div class="upload-overlay">
+          <div class="upload-icon">⬆</div>
+          <div class="upload-text" style="color:#fff">Replace image</div>
+        </div>
+      </div>
+      <input type="file" id="fileInput" accept="image/jpeg,image/png,image/webp,image/gif" onchange="handleFileSelect(event)" />
+    </div>
+
+    <!-- Fields -->
+    <div class="field">
+      <label>Title <span style="color:var(--error)">*</span></label>
+      <input type="text" id="fTitle" maxlength="100" oninput="updatePreview();updateCharCount('fTitle','titleCount',100)" placeholder="Announcement headline…" />
+      <div class="char-count"><span id="titleCount">0</span>/100</div>
+    </div>
+
+    <div class="field">
+      <label>Subtitle</label>
+      <input type="text" id="fSubtitle" maxlength="150" oninput="updatePreview();updateCharCount('fSubtitle','subCount',150)" placeholder="Short supporting text…" />
+      <div class="char-count"><span id="subCount">0</span>/150</div>
+    </div>
+
+    <div class="field">
+      <label>Description</label>
+      <textarea id="fDescription" maxlength="2000" oninput="updateCharCount('fDescription','descCount',2000)" placeholder="Full details shown on the detail screen…"></textarea>
+      <div class="char-count"><span id="descCount">0</span>/2000</div>
+    </div>
+
+    <div class="field-row">
+      <div class="field">
+        <label>Order Slot <span style="color:var(--error)">*</span></label>
+        <select id="fOrder">
+          <option value="">— Pick slot —</option>
+          <option value="1">Slot 1</option>
+          <option value="2">Slot 2</option>
+          <option value="3">Slot 3</option>
+          <option value="4">Slot 4</option>
+          <option value="5">Slot 5</option>
+        </select>
+      </div>
+      <div class="field">
+        <label>Badge Label</label>
+        <input type="text" id="fBadge" maxlength="12" oninput="updatePreview()" placeholder="NEW, HOT…" />
+      </div>
+    </div>
+
+    <div class="field-row">
+      <div class="field">
+        <label>CTA Label</label>
+        <input type="text" id="fCtaLabel" placeholder="Learn More" maxlength="30" />
+      </div>
+      <div class="field">
+        <label>CTA URL</label>
+        <input type="text" id="fCtaUrl" placeholder="https://…" />
+      </div>
+    </div>
+
+    <!-- Preview -->
+    <div class="preview-section">
+      <div class="preview-label">Live Preview</div>
+      <div class="preview-card" id="previewCard">
+        <img id="previewImg" src="" style="display:none" />
+        <div class="preview-scrim"></div>
+        <div class="preview-strip"></div>
+        <div class="preview-badge" id="prevBadge" style="display:none"></div>
+        <div class="preview-text">
+          <div class="preview-sub" id="prevSub"></div>
+          <div class="preview-title" id="prevTitle">Your title here…</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="panel-footer">
+    <button class="btn btn-ghost btn-sm" onclick="closePanel()">Cancel</button>
+    <button class="btn btn-primary btn-full" id="submitBtn" onclick="submitBanner()">
+      <span id="submitBtnLabel">Create Banner</span>
+    </button>
+  </div>
+</div>
+
+<!-- Confirm dialog -->
+<div class="dialog-wrap" id="confirmDialog">
+  <div class="dialog">
+    <h3>Delete Banner?</h3>
+    <p id="confirmMsg">This will permanently remove the banner and its image.</p>
+    <div class="dialog-btns">
+      <button class="btn btn-ghost btn-sm" onclick="closeConfirm()">Cancel</button>
+      <button class="btn btn-danger btn-sm" id="confirmOkBtn">Delete</button>
+    </div>
+  </div>
+</div>
+
+<!-- Toast -->
+<div class="toast" id="toast">
+  <div class="toast-dot"></div>
+  <span id="toastMsg"></span>
+</div>
+
+<script>
+// ── State ─────────────────────────────────────────────────────────────────────
+let banners = [];
+let editingId = null;
+let pendingFile = null;
+let pendingDataUrl = null;
+let confirmCallback = null;
+
+// ── API ───────────────────────────────────────────────────────────────────────
+const getBaseUrl = () => document.getElementById('apiUrlInput').value.replace(/\/$/, '');
+
+async function apiFetch(path, opts = {}) {
+  const res = await fetch(getBaseUrl() + path, opts);
+  const json = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(json.message || `HTTP ${res.status}`);
+  return json;
+}
+
+// ── Load banners ──────────────────────────────────────────────────────────────
+async function loadBanners() {
+  const grid = document.getElementById('slotsGrid');
+  grid.innerHTML = Array.from({length:5},(_,i)=>`<div class="skeleton" style="height:220px;border-radius:14px;"></div>`).join('');
+  try {
+    const { data } = await apiFetch('/banners?includeInactive=true');
+    banners = data || [];
+    setStatus('ok');
+    renderSlots();
+  } catch (e) {
+    setStatus('err');
+    grid.innerHTML = `<div class="empty-state" style="grid-column:1/-1"><div class="big">⚠</div><div>${e.message}</div><div style="font-size:12px;margin-top:6px;color:var(--textDim)">Check that your backend is running and the API URL is correct.</div></div>`;
+  }
+}
+
+// ── Render slots ──────────────────────────────────────────────────────────────
+function renderSlots() {
+  const grid = document.getElementById('slotsGrid');
+  grid.innerHTML = '';
+  for (let slot = 1; slot <= 5; slot++) {
+    const banner = banners.find(b => b.order === slot);
+    grid.appendChild(banner ? filledSlot(banner) : emptySlot(slot));
+  }
+}
+
+function emptySlot(slot) {
+  const div = document.createElement('div');
+  div.className = 'slot slot-empty';
+  div.onclick = () => openCreate(slot);
+  div.innerHTML = `
+    <div class="slot-num">Slot ${slot}</div>
+    <div class="plus">+</div>
+    <div class="slot-label">Add Banner</div>`;
+  return div;
+}
+
+function filledSlot(b) {
+  const div = document.createElement('div');
+  div.className = 'slot slot-filled';
+  const imgUrl = `${getBaseUrl()}/banners/image/${b._id}?t=${Date.now()}`;
+  div.innerHTML = `
+    <div class="slot-num" style="z-index:2">Slot ${b.order}</div>
+    <img class="slot-thumb" src="${imgUrl}" alt="${b.title}" />
+    <div class="slot-info">
+      <div class="slot-info-top">
+        <div class="slot-title">${escHtml(b.title)}</div>
+        ${b.badge ? `<div class="badge-pill">${escHtml(b.badge)}</div>` : ''}
+      </div>
+      ${b.subtitle ? `<div class="slot-sub">${escHtml(b.subtitle)}</div>` : ''}
+      <div class="slot-actions">
+        <button class="btn btn-ghost btn-sm" onclick="openEdit('${b._id}')">✎ Edit</button>
+        <button class="btn btn-danger btn-sm" onclick="confirmDelete('${b._id}','${escAttr(b.title)}')">✕ Delete</button>
+        <label class="toggle-wrap" title="${b.active ? 'Active' : 'Inactive'}">
+          <span class="toggle-label">${b.active ? 'Active' : 'Hidden'}</span>
+          <label class="toggle">
+            <input type="checkbox" ${b.active ? 'checked' : ''} onchange="toggleActive('${b._id}',this)" />
+            <div class="toggle-track"></div>
+            <div class="toggle-thumb"></div>
+          </label>
+        </label>
+      </div>
+    </div>`;
+  return div;
+}
+
+// ── Panel open/close ──────────────────────────────────────────────────────────
+function openCreate(slot) {
+  editingId = null;
+  pendingFile = null;
+  pendingDataUrl = null;
+  resetForm();
+  document.getElementById('fOrder').value = slot || '';
+  document.getElementById('panelTitle').textContent = 'New Banner';
+  document.getElementById('panelSlotLabel').textContent = `Slot ${slot || '—'}`;
+  document.getElementById('submitBtnLabel').textContent = 'Create Banner';
+  document.getElementById('panel').classList.add('open');
+  document.getElementById('overlay').classList.add('open');
+}
+
+async function openEdit(id) {
+  editingId = id;
+  pendingFile = null;
+  pendingDataUrl = null;
+  resetForm();
+  document.getElementById('panelTitle').textContent = 'Edit Banner';
+  document.getElementById('submitBtnLabel').textContent = 'Save Changes';
+  try {
+    const { data } = await apiFetch(`/banners/${id}`);
+    const b = data;
+    document.getElementById('fTitle').value = b.title || '';
+    document.getElementById('fSubtitle').value = b.subtitle || '';
+    document.getElementById('fDescription').value = b.description || '';
+    document.getElementById('fOrder').value = b.order || '';
+    document.getElementById('fBadge').value = b.badge || '';
+    document.getElementById('fCtaLabel').value = b.ctaLabel || '';
+    document.getElementById('fCtaUrl').value = b.ctaUrl || '';
+    updateCharCounts();
+    document.getElementById('panelSlotLabel').textContent = `Slot ${b.order}`;
+    // Show existing image
+    const imgUrl = `${getBaseUrl()}/banners/image/${id}?t=${Date.now()}`;
+    setPreviewImage(imgUrl);
+    updatePreview();
+  } catch (e) {
+    toast('Failed to load banner: ' + e.message, 'error');
+  }
+  document.getElementById('panel').classList.add('open');
+  document.getElementById('overlay').classList.add('open');
+}
+
+function closePanel() {
+  document.getElementById('panel').classList.remove('open');
+  document.getElementById('overlay').classList.remove('open');
+}
+
+// ── Form helpers ──────────────────────────────────────────────────────────────
+function resetForm() {
+  ['fTitle','fSubtitle','fDescription','fBadge','fCtaLabel','fCtaUrl'].forEach(id => document.getElementById(id).value = '');
+  document.getElementById('fOrder').value = '';
+  updateCharCounts();
+  clearPreviewImage();
+  updatePreview();
+}
+
+function updateCharCounts() {
+  updateCharCount('fTitle','titleCount',100);
+  updateCharCount('fSubtitle','subCount',150);
+  updateCharCount('fDescription','descCount',2000);
+}
+
+function updateCharCount(inputId, countId, max) {
+  const len = document.getElementById(inputId).value.length;
+  const el = document.getElementById(countId);
+  el.textContent = len;
+  el.style.color = len > max * .9 ? 'var(--error)' : 'var(--textDim)';
+}
+
+// ── Image upload ──────────────────────────────────────────────────────────────
+function triggerFileInput() { document.getElementById('fileInput').click(); }
+
+function handleDragOver(e) { e.preventDefault(); document.getElementById('uploadZone').classList.add('drag'); }
+function handleDragLeave()  { document.getElementById('uploadZone').classList.remove('drag'); }
+function handleDrop(e) {
+  e.preventDefault();
+  document.getElementById('uploadZone').classList.remove('drag');
+  const file = e.dataTransfer.files[0];
+  if (file) processFile(file);
+}
+function handleFileSelect(e) {
+  const file = e.target.files[0];
+  if (file) processFile(file);
+  e.target.value = '';
+}
+
+function processFile(file) {
+  if (!file.type.match(/image\/(jpeg|png|webp|gif)/)) { toast('Only JPEG, PNG, WebP, GIF allowed', 'error'); return; }
+  if (file.size > 5 * 1024 * 1024) { toast('Image must be under 5 MB', 'error'); return; }
+  pendingFile = file;
+  const reader = new FileReader();
+  reader.onload = e => { pendingDataUrl = e.target.result; setPreviewImage(e.target.result); updatePreview(); };
+  reader.readAsDataURL(file);
+}
+
+function setPreviewImage(src) {
+  const zone = document.getElementById('uploadZone');
+  let img = zone.querySelector('img');
+  if (!img) { img = document.createElement('img'); img.style.cssText='position:absolute;inset:0;width:100%;height:100%;object-fit:cover;border-radius:12px;'; zone.prepend(img); }
+  img.src = src;
+  document.getElementById('previewImg').src = src;
+  document.getElementById('previewImg').style.display = 'block';
+}
+
+function clearPreviewImage() {
+  const zone = document.getElementById('uploadZone');
+  const img = zone.querySelector('img');
+  if (img) img.remove();
+  document.getElementById('previewImg').style.display = 'none';
+  document.getElementById('previewImg').src = '';
+}
+
+function updatePreview() {
+  const title  = document.getElementById('fTitle').value   || 'Your title here…';
+  const sub    = document.getElementById('fSubtitle').value || '';
+  const badge  = document.getElementById('fBadge').value   || '';
+  document.getElementById('prevTitle').textContent = title;
+  document.getElementById('prevSub').textContent   = sub;
+  const badgeEl = document.getElementById('prevBadge');
+  badgeEl.textContent = badge;
+  badgeEl.style.display = badge ? 'block' : 'none';
+}
+
+// ── Submit ─────────────────────────────────────────────────────────────────────
+async function submitBanner() {
+  const title = document.getElementById('fTitle').value.trim();
+  const order = document.getElementById('fOrder').value;
+  if (!title)  { toast('Title is required', 'error'); return; }
+  if (!order)  { toast('Please select a slot', 'error'); return; }
+  if (!editingId && !pendingFile) { toast('Please upload an image', 'error'); return; }
+
+  const btn = document.getElementById('submitBtn');
+  btn.disabled = true;
+  document.getElementById('submitBtnLabel').textContent = editingId ? 'Saving…' : 'Creating…';
+
+  try {
+    const fd = new FormData();
+    fd.append('title',       title);
+    fd.append('subtitle',    document.getElementById('fSubtitle').value.trim());
+    fd.append('description', document.getElementById('fDescription').value.trim());
+    fd.append('order',       order);
+    fd.append('badge',       document.getElementById('fBadge').value.trim());
+    fd.append('ctaLabel',    document.getElementById('fCtaLabel').value.trim() || 'Learn More');
+    fd.append('ctaUrl',      document.getElementById('fCtaUrl').value.trim());
+    if (pendingFile) fd.append('image', pendingFile);
+
+    if (editingId) {
+      await apiFetch(`/banners/${editingId}`, { method: 'PUT', body: fd });
+      toast('Banner updated ✓', 'success');
+    } else {
+      await apiFetch('/banners', { method: 'POST', body: fd });
+      toast('Banner created ✓', 'success');
+    }
+    closePanel();
+    await loadBanners();
+  } catch (e) {
+    toast(e.message, 'error');
+  } finally {
+    btn.disabled = false;
+    document.getElementById('submitBtnLabel').textContent = editingId ? 'Save Changes' : 'Create Banner';
+  }
+}
+
+// ── Toggle active ──────────────────────────────────────────────────────────────
+async function toggleActive(id, checkbox) {
+  const prev = checkbox.checked;
+  try {
+    await apiFetch(`/banners/${id}/toggle`, { method: 'PATCH' });
+    const label = checkbox.closest('.toggle-wrap').querySelector('.toggle-label');
+    if (label) label.textContent = checkbox.checked ? 'Active' : 'Hidden';
+  } catch (e) {
+    checkbox.checked = prev; // revert
+    toast(e.message, 'error');
+  }
+}
+
+// ── Delete ─────────────────────────────────────────────────────────────────────
+function confirmDelete(id, title) {
+  document.getElementById('confirmMsg').textContent = `"${title}" will be permanently removed.`;
+  const dialog = document.getElementById('confirmDialog');
+  dialog.classList.add('open');
+  const btn = document.getElementById('confirmOkBtn');
+  btn.onclick = async () => {
+    closeConfirm();
+    try {
+      await apiFetch(`/banners/${id}`, { method: 'DELETE' });
+      toast('Banner deleted', 'success');
+      await loadBanners();
+    } catch (e) {
+      toast(e.message, 'error');
+    }
+  };
+}
+function closeConfirm() { document.getElementById('confirmDialog').classList.remove('open'); }
+
+// ── Status dot ─────────────────────────────────────────────────────────────────
+function setStatus(state) {
+  const dot = document.getElementById('statusDot');
+  dot.className = 'status-dot ' + state;
+}
+
+// ── Toast ──────────────────────────────────────────────────────────────────────
+let toastTimer;
+function toast(msg, type = 'success') {
+  const el = document.getElementById('toast');
+  el.className = `toast ${type}`;
+  document.getElementById('toastMsg').textContent = msg;
+  el.classList.add('show');
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => el.classList.remove('show'), 3000);
+}
+
+// ── Utils ──────────────────────────────────────────────────────────────────────
+function escHtml(s) { const d=document.createElement('div'); d.textContent=s; return d.innerHTML; }
+function escAttr(s) { return s.replace(/'/g,"\\'").replace(/"/g,'&quot;'); }
+
+// Reload on API URL change
+document.getElementById('apiUrlInput').addEventListener('change', loadBanners);
+
+// ── Init ──────────────────────────────────────────────────────────────────────
+loadBanners();
+</script>
+</body>
+</html>

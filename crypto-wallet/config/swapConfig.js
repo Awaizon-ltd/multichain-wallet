@@ -184,20 +184,6 @@ export const SWAP_ROUTERS = {
     version: "V2",
     name: "Velodrome",
   },
-  // ✅ Mantle Mainnet - FusionX (most popular DEX on Mantle)
-  5000: {
-    router: "0xA5E0829CaCEd8fFDD4De3c43696c57F7D7A678ff",
-    factory: "0x5757371414417b8C6CAad45bAeF941aBc7d3Ab32",
-    version: "V2",
-    name: "FusionX",
-  },
-  // ✅ Mantle Sepolia Testnet
-  5003: {
-    router: "0xA5E0829CaCEd8fFDD4De3c43696c57F7D7A678ff", // May need verification
-    factory: "0x5757371414417b8C6CAad45bAeF941aBc7d3Ab32",
-    version: "V2",
-    name: "FusionX Testnet",
-  },
 };
 
 // WETH addresses by chain
@@ -212,9 +198,6 @@ export const WETH_ADDRESSES = {
   84532: "0x4200000000000000000000000000000000000006", // Base Sepolia (WETH)
   42161: "0x82aF49447D8a07e3bd95BD0d56f35241523fBab1", // Arbitrum (WETH)
   10: "0x4200000000000000000000000000000000000006", // Optimism (WETH)
-  // ✅ Mantle chains
-  5000: "0x78c1b0C915c4FAA5FffA6CAbf0219DA63d7f4cb8", // Mantle (WMNT)
-  5003: "0x78c1b0C915c4FAA5FffA6CAbf0219DA63d7f4cb8", // Mantle Sepolia (WMNT)
 };
 
 // Default slippage tolerance (0.5%)
@@ -223,7 +206,7 @@ export const DEFAULT_SLIPPAGE = 0.5;
 // Deadline (20 minutes from now)
 export const getDeadline = () => Math.floor(Date.now() / 1000) + 60 * 20;
 
-// Check if token is native ETH/BNB/MATIC/MNT
+// Check if token is native ETH/BNB/MATIC
 export const isNativeToken = (address) => {
   if (!address) return false;
   const addr = address.toLowerCase();

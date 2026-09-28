@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from "react";
+import React, { useState, useEffect, useRef, useCallback } from "react";
 import {
   View,
   Text,
@@ -28,9 +28,11 @@ import { parseUnits } from "ethers";
 import Alert from "../../utils/Alert";
 import { getTokensByChain } from "../../utils/TokenDatabase";
 import { API_CONFIG } from "../../config/api";
-
-// Import modular blockchain utilities
-import { getAllTokenBalances } from "../../utils/blockchain/Balances";
+import ChainBadge from "../../components/common/ChainBadge";
+import {
+  getAllTokenBalances,
+  getTokenBalance,
+} from "../../utils/blockchain/Balances";
 import {
   estimateNativeTransferGas,
   estimateTokenTransferGas,
@@ -42,48 +44,111 @@ const ERC20_ABI = [
 
 const API_BASE_URL = API_CONFIG.BASE_URL;
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Recipient input modes
-// ─────────────────────────────────────────────────────────────────────────────
 const RECIPIENT_MODES = [
   { key: "address", label: "Address", icon: "hash" },
   { key: "username", label: "Username", icon: "at-sign" },
   { key: "email", label: "Email", icon: "mail" },
 ];
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Identity resolve API — calls the same endpoint used in BindWalletScreen
-// ─────────────────────────────────────────────────────────────────────────────
 const resolveIdentity = async (emailOrUsername) => {
   const res = await fetch(
     `${API_BASE_URL}/wallets/resolve?email_or_username=${encodeURIComponent(emailOrUsername.trim())}`,
   );
   const json = await res.json();
   if (!res.ok) throw { status: res.status, ...json };
-  return json; // { success: true, data: { wallet_address, username, email, ... } }
+  return json;
 };
+
+// ─── Helpers ─────────────────────────────────────────────────────────────────
+
+/** Build the native token entry from chain/wallet context — no async needed. */
+const buildNativeToken = (activeChain, nativeBalance) => ({
+  id: "native",
+  symbol: activeChain.symbol,
+  name: activeChain.name,
+  address: null,
+  balance: nativeBalance.formatted,
+  decimals: 18,
+  isNative: true,
+  logo: activeChain.icon,
+  source: "native",
+  balanceLoading: false,
+});
+
+/** Shape a DB token row into the list format, optionally with a live balance. */
+const formatDbToken = (dbToken, balance = "0", balanceLoading = false) => ({
+  id: dbToken.address,
+  symbol: dbToken.symbol,
+  name: dbToken.name,
+  address: dbToken.address,
+  balance,
+  decimals: dbToken.decimals,
+  isNative: false,
+  logo: dbToken.logo || null,
+  source: "imported",
+  balanceLoading,
+});
+
+/** Shape a discovered on-chain token, enriched with any DB metadata. */
+const formatDiscoveredToken = (token, dbToken = null) => ({
+  id: token.address,
+  symbol: dbToken?.symbol || token.symbol,
+  name: dbToken?.name || token.name,
+  address: token.address,
+  balance: token.formatted,
+  decimals: dbToken?.decimals ?? token.decimals,
+  isNative: false,
+  logo: dbToken?.logo || token.logo || null,
+  source: dbToken ? "imported" : "discovered",
+  balanceLoading: false,
+});
+
+/** Merge a newly-fetched token list into existing state without flicker. */
+const mergeTokenLists = (existing, incoming) => {
+  const incomingMap = {};
+  incoming.forEach((t) => {
+    incomingMap[t.id] = t;
+  });
+
+  // Update existing entries that now have live balances
+  const updated = existing.map((t) => incomingMap[t.id] ?? t);
+
+  // Append truly new entries (discovered on-chain, not in DB)
+  incoming.forEach((t) => {
+    if (!updated.find((e) => e.id === t.id)) updated.push(t);
+  });
+
+  return updated.sort(
+    (a, b) => (parseFloat(b.balance) || 0) - (parseFloat(a.balance) || 0),
+  );
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
 
 const SendScreen = ({ navigation, route }) => {
   const theme = useTheme();
   const styles = createStyles(theme);
   const { address, getBalanceForChain, refreshAllBalances } = useWallet();
   const { activeChain } = useChain();
-  const { token: routeToken } = route.params || {};
+  const { token: routeToken, recipient: routeRecipient } = route.params || {};
 
   // ── Token state ────────────────────────────────────────────────────────────
   const [selectedToken, setSelectedToken] = useState(null);
   const [availableTokens, setAvailableTokens] = useState([]);
+  // Two separate loading flags:
+  //   loadingTokens  → true only during Phase 1 (blocks screen render)
+  //   refreshingBalances → true during Phase 2 (background, shows subtle indicator)
   const [loadingTokens, setLoadingTokens] = useState(true);
+  const [refreshingBalances, setRefreshingBalances] = useState(false);
 
   // ── Recipient state ────────────────────────────────────────────────────────
-  const [recipientMode, setRecipientMode] = useState("address"); // "address" | "username" | "email"
-  const [recipient, setRecipient] = useState("");
-  const [resolvedAddress, setResolvedAddress] = useState(null); // wallet address resolved from identity
+  const [recipientMode, setRecipientMode] = useState("address");
+  const [recipient, setRecipient] = useState(routeRecipient ?? "");
+  const [resolvedAddress, setResolvedAddress] = useState(null);
   const [resolving, setResolving] = useState(false);
   const [resolveError, setResolveError] = useState(null);
 
   // ── Other state ────────────────────────────────────────────────────────────
-  const [recentAddresses, setRecentAddresses] = useState([]);
   const [amount, setAmount] = useState("");
   const [loading, setLoading] = useState(false);
   const [gasEstimate, setGasEstimate] = useState(null);
@@ -92,7 +157,6 @@ const SendScreen = ({ navigation, route }) => {
 
   // ── Modal states ───────────────────────────────────────────────────────────
   const [showTokenSelector, setShowTokenSelector] = useState(false);
-  const [showAddressPicker, setShowAddressPicker] = useState(false);
   const [showQRScanner, setShowQRScanner] = useState(false);
   const [showChainSwitcher, setShowChainSwitcher] = useState(false);
   const [showTransactionModal, setShowTransactionModal] = useState(false);
@@ -100,26 +164,122 @@ const SendScreen = ({ navigation, route }) => {
   // ── Resolve chip animation ─────────────────────────────────────────────────
   const resolveChipAnim = useRef(new Animated.Value(0)).current;
 
-  // ── Computed: the final wallet address to send to ──────────────────────────
-  // In address mode: recipient directly
-  // In username/email mode: resolvedAddress (populated after API call)
+  // ── Computed ───────────────────────────────────────────────────────────────
   const effectiveRecipient =
     recipientMode === "address" ? recipient : resolvedAddress;
 
-  // ── Initialize tokens ──────────────────────────────────────────────────────
+  // ─────────────────────────────────────────────────────────────────────────────
+  // Token loading — two-phase to minimise perceived latency
+  //
+  // Phase 1 (synchronous / near-instant):
+  //   • Build native token from WalletContext (no async).
+  //   • Load user-imported tokens from the local SQLite DB (fast local I/O).
+  //   • Render the screen immediately with balance = "0" placeholders for
+  //     imported tokens while Phase 2 runs in the background.
+  //
+  // Phase 2 (background — no spinner blocking the UI):
+  //   • Fetch on-chain balances via getAllTokenBalances (network call).
+  //   • For DB tokens not discovered via logs, call getTokenBalance directly.
+  //   • Merge results into the existing list — tokens already on screen just
+  //     get their balance updated in place.
+  // ─────────────────────────────────────────────────────────────────────────────
+  const loadTokens = useCallback(async () => {
+    if (!address || !activeChain) return;
+
+    // ── Phase 1: instant render ───────────────────────────────────────────────
+    const nativeBalance = getBalanceForChain(activeChain.id);
+    const nativeToken = buildNativeToken(activeChain, nativeBalance);
+
+    const userAddress = address.toLowerCase();
+    const normalizedChainId = parseInt(activeChain.id);
+
+    // Local DB only — fast
+    const importedTokens = await getTokensByChain(
+      userAddress,
+      normalizedChainId,
+    );
+
+    // Show placeholders with balanceLoading flag so the UI can render a shimmer
+    const phase1Tokens = [nativeToken, ...importedTokens.map((t) => formatDbToken(t, "0", true))];
+    setAvailableTokens(phase1Tokens);
+    setLoadingTokens(false); // ← screen renders here
+
+    if (!selectedToken && !routeToken) setSelectedToken(nativeToken);
+
+    // ── Phase 2: background balance fetch ────────────────────────────────────
+    setRefreshingBalances(true);
+    try {
+      const [discoveredTokens] = await Promise.all([
+        getAllTokenBalances(address, activeChain),
+      ]);
+
+      // Index for O(1) lookup
+      const discoveredMap = {};
+      discoveredTokens.forEach((t) => {
+        discoveredMap[t.address.toLowerCase()] = t;
+      });
+
+      const dbMap = {};
+      importedTokens.forEach((t) => {
+        dbMap[t.address.toLowerCase()] = t;
+      });
+
+      // Shape discovered tokens (enriched with DB metadata where available)
+      const discoveredFormatted = discoveredTokens.map((token) =>
+        formatDiscoveredToken(
+          token,
+          dbMap[token.address.toLowerCase()] ?? null,
+        ),
+      );
+
+      // For DB tokens not found via logs — fetch balance directly (parallel)
+      const missingDbTokens = importedTokens.filter(
+        (t) => !discoveredMap[t.address.toLowerCase()],
+      );
+
+      const directResults = await Promise.all(
+        missingDbTokens.map(async (dbToken) => {
+          try {
+            const bal = await getTokenBalance(
+              dbToken.address,
+              address,
+              activeChain,
+            );
+            return formatDbToken(dbToken, bal.formatted, false);
+          } catch {
+            // Unresponsive contract on this chain — show zero balance
+            return formatDbToken(dbToken, "0", false);
+          }
+        }),
+      );
+
+      // Merge everything and update state once
+      setAvailableTokens((prev) =>
+        mergeTokenLists(prev, [...discoveredFormatted, ...directResults]),
+      );
+    } catch (error) {
+      console.error("[SendScreen] Background balance refresh failed:", error);
+      // Don't alert — Phase 1 tokens are still usable; just clear loading flags
+      setAvailableTokens((prev) =>
+        prev.map((t) => ({ ...t, balanceLoading: false })),
+      );
+    } finally {
+      setRefreshingBalances(false);
+    }
+  }, [address, activeChain]);
+
   useEffect(() => {
-    if (address && activeChain) loadTokens();
-  }, [activeChain, address]);
+    loadTokens();
+  }, [loadTokens]);
 
   useEffect(() => {
     if (routeToken) setSelectedToken(routeToken);
   }, [routeToken]);
 
-  // ── Debounced identity resolve (username / email modes) ────────────────────
+  // ── Debounced identity resolve ─────────────────────────────────────────────
   useEffect(() => {
     if (recipientMode === "address") return;
 
-    // Reset on empty
     if (!recipient.trim()) {
       setResolvedAddress(null);
       setResolveError(null);
@@ -131,17 +291,13 @@ const SendScreen = ({ navigation, route }) => {
     setResolveError(null);
     animateResolveChip(false);
 
-    const timer = setTimeout(() => {
-      doResolve(recipient.trim());
-    }, 600);
-
+    const timer = setTimeout(() => doResolve(recipient.trim()), 600);
     return () => clearTimeout(timer);
   }, [recipient, recipientMode]);
 
   // ── Debounced gas estimation ───────────────────────────────────────────────
   useEffect(() => {
-    const dest = effectiveRecipient;
-    if (dest && amount && address && selectedToken) {
+    if (effectiveRecipient && amount && address && selectedToken) {
       const timer = setTimeout(() => estimateGas(), 500);
       return () => clearTimeout(timer);
     } else {
@@ -149,7 +305,7 @@ const SendScreen = ({ navigation, route }) => {
     }
   }, [effectiveRecipient, amount, selectedToken]);
 
-  // ── Resolve chip animation helper ─────────────────────────────────────────
+  // ── Helpers ───────────────────────────────────────────────────────────────
   const animateResolveChip = (show) => {
     Animated.spring(resolveChipAnim, {
       toValue: show ? 1 : 0,
@@ -159,7 +315,6 @@ const SendScreen = ({ navigation, route }) => {
     }).start();
   };
 
-  // ── Do the actual identity resolve ────────────────────────────────────────
   const doResolve = async (query) => {
     try {
       setResolving(true);
@@ -181,7 +336,6 @@ const SendScreen = ({ navigation, route }) => {
     }
   };
 
-  // ── Mode switch — clear recipient state ────────────────────────────────────
   const switchMode = (mode) => {
     setRecipientMode(mode);
     setRecipient("");
@@ -192,95 +346,6 @@ const SendScreen = ({ navigation, route }) => {
     setErrors((prev) => ({ ...prev, recipient: null }));
   };
 
-  // ─────────────────────────────────────────────────────────────────────────────
-  // Load tokens (unchanged from original)
-  // ─────────────────────────────────────────────────────────────────────────────
-  const loadTokens = async () => {
-    try {
-      setLoadingTokens(true);
-      if (!address) return;
-
-      const nativeBalance = getBalanceForChain(activeChain.id);
-      const nativeToken = {
-        id: "native",
-        symbol: activeChain.symbol,
-        name: activeChain.name,
-        address: null,
-        balance: nativeBalance.formatted,
-        decimals: 18,
-        isNative: true,
-        logo: activeChain.icon,
-        source: "native",
-      };
-
-      const userAddress = address.toLowerCase();
-      const normalizedChainId = parseInt(activeChain.id);
-      const importedTokens = await getTokensByChain(
-        userAddress,
-        normalizedChainId,
-      );
-
-      const alchemyTokens = await getAllTokenBalances(address, activeChain);
-      const alchemyBalanceMap = {};
-      alchemyTokens.forEach((token) => {
-        alchemyBalanceMap[token.address.toLowerCase()] = token;
-      });
-
-      const mergedTokens = importedTokens.map((dbToken) => {
-        const alchemyToken = alchemyBalanceMap[dbToken.address.toLowerCase()];
-        return {
-          id: dbToken.address,
-          symbol: dbToken.symbol,
-          name: dbToken.name,
-          address: dbToken.address,
-          balance: alchemyToken ? alchemyToken.formatted : "0",
-          decimals: dbToken.decimals,
-          isNative: false,
-          logo: dbToken.logo || alchemyToken?.logo,
-          source: "database",
-        };
-      });
-
-      const dbTokenAddresses = new Set(
-        importedTokens.map((t) => t.address.toLowerCase()),
-      );
-      const additionalAlchemyTokens = alchemyTokens
-        .filter((token) => !dbTokenAddresses.has(token.address.toLowerCase()))
-        .map((token) => ({
-          id: token.address,
-          symbol: token.symbol,
-          name: token.name,
-          address: token.address,
-          balance: token.formatted,
-          decimals: token.decimals,
-          isNative: false,
-          logo: token.logo,
-          source: "alchemy",
-        }));
-
-      const allTokensData = [
-        nativeToken,
-        ...mergedTokens,
-        ...additionalAlchemyTokens,
-      ];
-      allTokensData.sort(
-        (a, b) => (parseFloat(b.balance) || 0) - (parseFloat(a.balance) || 0),
-      );
-
-      setAvailableTokens(allTokensData);
-      if (!selectedToken && !routeToken) setSelectedToken(nativeToken);
-      setRecentAddresses([]);
-    } catch (error) {
-      console.error("[SendScreen] Error loading tokens:", error);
-      Alert.alert("Error", "Failed to load tokens");
-    } finally {
-      setLoadingTokens(false);
-    }
-  };
-
-  // ─────────────────────────────────────────────────────────────────────────────
-  // Gas estimation (uses effectiveRecipient)
-  // ─────────────────────────────────────────────────────────────────────────────
   const estimateGas = async () => {
     const dest = effectiveRecipient;
     if (!validateAddress(dest).isValid || !amount || parseFloat(amount) <= 0)
@@ -313,15 +378,11 @@ const SendScreen = ({ navigation, route }) => {
     }
   };
 
-  // ─────────────────────────────────────────────────────────────────────────────
-  // Form validation (uses effectiveRecipient)
-  // ─────────────────────────────────────────────────────────────────────────────
   const validateForm = () => {
     const newErrors = {};
 
     if (!selectedToken) newErrors.token = "Please select a token";
 
-    // In identity mode, check that resolution succeeded
     if (recipientMode !== "address") {
       if (!recipient.trim()) {
         newErrors.recipient =
@@ -360,13 +421,13 @@ const SendScreen = ({ navigation, route }) => {
     setShowTransactionModal(true);
   };
 
-  const handleTransactionSuccess = async (receipt) => {
+  const handleTransactionSuccess = async () => {
     try {
       await refreshAllBalances();
       Alert.alert("Success", `Sent ${amount} ${selectedToken.symbol}`, [
         { text: "OK", onPress: () => navigation.goBack() },
       ]);
-    } catch (error) {
+    } catch {
       Alert.alert("Transaction Sent", "Your transaction was successful.", [
         { text: "OK", onPress: () => navigation.goBack() },
       ]);
@@ -386,17 +447,15 @@ const SendScreen = ({ navigation, route }) => {
   const setMaxAmount = () => {
     if (!selectedToken) return;
     if (selectedToken.isNative) {
-      if (gasEstimate) {
-        const maxAmount = Math.max(
-          0,
-          parseFloat(selectedToken.balance) -
-            parseFloat(gasEstimate.totalCost) -
-            0.000001,
-        ).toFixed(6);
-        setAmount(maxAmount);
-      } else {
-        setAmount((parseFloat(selectedToken.balance) * 0.8).toFixed(6));
-      }
+      const max = gasEstimate
+        ? Math.max(
+            0,
+            parseFloat(selectedToken.balance) -
+              parseFloat(gasEstimate.totalCost) -
+              0.000001,
+          ).toFixed(6)
+        : (parseFloat(selectedToken.balance) * 0.8).toFixed(6);
+      setAmount(max);
     } else {
       setAmount(selectedToken.balance);
     }
@@ -409,11 +468,6 @@ const SendScreen = ({ navigation, route }) => {
     setShowTokenSelector(false);
   };
 
-  const handleSelectAddress = (addr) => {
-    setRecipient(addr);
-    setShowAddressPicker(false);
-  };
-
   const handleQRScan = (scannedAddress) => {
     setRecipientMode("address");
     setRecipient(scannedAddress);
@@ -421,16 +475,45 @@ const SendScreen = ({ navigation, route }) => {
   };
 
   const getTokenSourceBadge = (source) => {
-    if (source === "database")
+    if (source === "imported")
       return { label: "Imported", color: theme.COLORS.primary };
-    if (source === "alchemy")
-      return { label: "Auto", color: theme.COLORS.success };
+    if (source === "discovered")
+      return { label: "Found", color: theme.COLORS.success };
     return null;
   };
 
+  const getTransactionConfig = () => {
+    const dest = effectiveRecipient;
+    if (!selectedToken || !dest || !amount) return null;
+
+    if (selectedToken.isNative) {
+      return {
+        isNative: true,
+        to: dest,
+        value: parseUnits(amount, 18).toString(),
+      };
+    }
+    return {
+      isNative: false,
+      contractAddress: selectedToken.address,
+      contractABI: ERC20_ABI,
+      functionName: "transfer",
+      args: [dest, parseUnits(amount, selectedToken.decimals)],
+      value: "0",
+    };
+  };
+
+  const txConfig = getTransactionConfig();
+
+  const recipientDisplayLabel =
+    recipientMode === "address"
+      ? formatAddress(recipient, 10)
+      : `${recipient} (${formatAddress(resolvedAddress || "", 8)})`;
+
+  // ── Render helpers ─────────────────────────────────────────────────────────
+
   const renderTokenItem = ({ item }) => {
     const balanceNum = parseFloat(item.balance);
-    const hasBalance = balanceNum > 0;
     const sourceBadge = getTokenSourceBadge(item.source);
 
     return (
@@ -443,20 +526,28 @@ const SendScreen = ({ navigation, route }) => {
         activeOpacity={0.7}
       >
         <View style={styles.tokenItemLeft}>
-          {item.logo ? (
-            <Image source={{ uri: item.logo }} style={styles.tokenLogo} />
-          ) : (
-            <View
-              style={[
-                styles.tokenIcon,
-                item.isNative && styles.tokenIconNative,
-              ]}
-            >
-              <Text style={styles.tokenIconText}>
-                {item.symbol.substring(0, 2)}
-              </Text>
-            </View>
-          )}
+          <View style={styles.tokenIconOuterWrap}>
+            {item.logo ? (
+              <Image source={{ uri: item.logo }} style={styles.tokenLogo} />
+            ) : (
+              <View
+                style={[
+                  styles.tokenIcon,
+                  item.isNative && styles.tokenIconNative,
+                ]}
+              >
+                <Text style={styles.tokenIconText}>
+                  {item.symbol.substring(0, 2)}
+                </Text>
+              </View>
+            )}
+            {!item.isNative && (
+              <ChainBadge
+                uri={activeChain?.icon}
+                borderColor={theme.COLORS.background}
+              />
+            )}
+          </View>
           <View style={styles.tokenItemInfo}>
             <View style={styles.tokenItemHeader}>
               <Text style={styles.tokenItemSymbol}>{item.symbol}</Text>
@@ -482,34 +573,24 @@ const SendScreen = ({ navigation, route }) => {
           </View>
         </View>
         <View style={styles.tokenItemRight}>
-          <Text
-            style={[
-              styles.tokenItemBalance,
-              !hasBalance && styles.tokenItemBalanceZero,
-            ]}
-          >
-            {balanceNum.toFixed(4)}
-          </Text>
+          {item.balanceLoading ? (
+            <ActivityIndicator size="small" color={theme.COLORS.primary} />
+          ) : (
+            <Text
+              style={[
+                styles.tokenItemBalance,
+                balanceNum === 0 && styles.tokenItemBalanceZero,
+              ]}
+            >
+              {balanceNum.toFixed(4)}
+            </Text>
+          )}
         </View>
       </TouchableOpacity>
     );
   };
 
-  const renderAddressItem = ({ item }) => (
-    <TouchableOpacity
-      style={styles.addressItem}
-      onPress={() => handleSelectAddress(item)}
-      activeOpacity={0.7}
-    >
-      <View style={styles.addressIcon}>
-        <Ionicons name="time" size={16} color={theme.COLORS.background} />
-      </View>
-      <View style={styles.addressInfo}>
-        <Text style={styles.addressValue}>{formatAddress(item, 10)}</Text>
-      </View>
-    </TouchableOpacity>
-  );
-
+  // ── Loading screen (Phase 1 only — should be very brief) ──────────────────
   if (loadingTokens) {
     return (
       <View style={styles.loadingContainer}>
@@ -519,36 +600,7 @@ const SendScreen = ({ navigation, route }) => {
     );
   }
 
-  const getTransactionConfig = () => {
-    const dest = effectiveRecipient;
-    if (!selectedToken || !dest || !amount) return null;
-
-    if (selectedToken.isNative) {
-      return {
-        isNative: true,
-        to: dest,
-        value: parseUnits(amount, 18).toString(),
-      };
-    } else {
-      return {
-        isNative: false,
-        contractAddress: selectedToken.address,
-        contractABI: ERC20_ABI,
-        functionName: "transfer",
-        args: [dest, parseUnits(amount, selectedToken.decimals)],
-        value: "0",
-      };
-    }
-  };
-
-  const txConfig = getTransactionConfig();
-
-  // ── Recipient label for the transaction description ────────────────────────
-  const recipientDisplayLabel =
-    recipientMode === "address"
-      ? formatAddress(recipient, 10)
-      : `${recipient} (${formatAddress(resolvedAddress || "", 8)})`;
-
+  // ── Main render ────────────────────────────────────────────────────────────
   return (
     <KeyboardAvoidingView
       style={styles.container}
@@ -562,24 +614,34 @@ const SendScreen = ({ navigation, route }) => {
         {/* ── Header ── */}
         <View style={styles.header}>
           <Text style={styles.headerTitle}>Send</Text>
-          <TouchableOpacity
-            style={styles.networkButton}
-            onPress={() => setShowChainSwitcher(true)}
-            activeOpacity={0.7}
-          >
-            {activeChain.icon && (
-              <Image
-                source={{ uri: activeChain.icon }}
-                style={styles.networkIcon}
+          <View style={styles.headerRight}>
+            {/* Subtle background-refresh indicator */}
+            {refreshingBalances && (
+              <ActivityIndicator
+                size="small"
+                color={theme.COLORS.textSecondary}
+                style={styles.refreshIndicator}
               />
             )}
-            <Text style={styles.networkText}>{activeChain.name}</Text>
-            <Feather
-              name="chevron-down"
-              size={12}
-              color={theme.COLORS.textSecondary}
-            />
-          </TouchableOpacity>
+            <TouchableOpacity
+              style={styles.networkButton}
+              onPress={() => setShowChainSwitcher(true)}
+              activeOpacity={0.7}
+            >
+              {activeChain.icon && (
+                <Image
+                  source={{ uri: activeChain.icon }}
+                  style={styles.networkIcon}
+                />
+              )}
+              <Text style={styles.networkText}>{activeChain.name}</Text>
+              <Feather
+                name="chevron-down"
+                size={12}
+                color={theme.COLORS.textSecondary}
+              />
+            </TouchableOpacity>
+          </View>
         </View>
 
         {/* ── Empty State ── */}
@@ -619,23 +681,31 @@ const SendScreen = ({ navigation, route }) => {
                 {selectedToken ? (
                   <>
                     <View style={styles.tokenSelectorLeft}>
-                      {selectedToken.logo ? (
-                        <Image
-                          source={{ uri: selectedToken.logo }}
-                          style={styles.selectedTokenLogo}
-                        />
-                      ) : (
-                        <View
-                          style={[
-                            styles.tokenIcon,
-                            selectedToken.isNative && styles.tokenIconNative,
-                          ]}
-                        >
-                          <Text style={styles.tokenIconText}>
-                            {selectedToken.symbol.substring(0, 2)}
-                          </Text>
-                        </View>
-                      )}
+                      <View style={styles.tokenIconOuterWrap}>
+                        {selectedToken.logo ? (
+                          <Image
+                            source={{ uri: selectedToken.logo }}
+                            style={styles.selectedTokenLogo}
+                          />
+                        ) : (
+                          <View
+                            style={[
+                              styles.tokenIcon,
+                              selectedToken.isNative && styles.tokenIconNative,
+                            ]}
+                          >
+                            <Text style={styles.tokenIconText}>
+                              {selectedToken.symbol.substring(0, 2)}
+                            </Text>
+                          </View>
+                        )}
+                        {!selectedToken.isNative && (
+                          <ChainBadge
+                            uri={activeChain?.icon}
+                            borderColor={theme.COLORS.background}
+                          />
+                        )}
+                      </View>
                       <View>
                         <Text style={styles.selectedTokenSymbol}>
                           {selectedToken.symbol}
@@ -672,36 +742,21 @@ const SendScreen = ({ navigation, route }) => {
             <View style={styles.section}>
               <View style={styles.sectionHeader}>
                 <Text style={styles.sectionLabel}>Recipient</Text>
-                <View style={styles.inputActions}>
-                  {recipientMode === "address" && (
-                    <TouchableOpacity
-                      onPress={() => setShowQRScanner(true)}
-                      style={styles.iconButton}
-                    >
-                      <Ionicons
-                        name="scan-outline"
-                        size={16}
-                        color={theme.COLORS.primary}
-                      />
-                    </TouchableOpacity>
-                  )}
-                  {recentAddresses.length > 0 &&
-                    recipientMode === "address" && (
-                      <TouchableOpacity
-                        onPress={() => setShowAddressPicker(true)}
-                        style={styles.iconButton}
-                      >
-                        <Ionicons
-                          name="time-outline"
-                          size={16}
-                          color={theme.COLORS.primary}
-                        />
-                      </TouchableOpacity>
-                    )}
-                </View>
+                {recipientMode === "address" && (
+                  <TouchableOpacity
+                    onPress={() => setShowQRScanner(true)}
+                    style={styles.iconButton}
+                  >
+                    <Ionicons
+                      name="scan-outline"
+                      size={16}
+                      color={theme.COLORS.primary}
+                    />
+                  </TouchableOpacity>
+                )}
               </View>
 
-              {/* ── Mode toggle pills ── */}
+              {/* Mode toggle pills */}
               <View style={styles.modeToggle}>
                 {RECIPIENT_MODES.map((mode) => {
                   const active = recipientMode === mode.key;
@@ -744,7 +799,7 @@ const SendScreen = ({ navigation, route }) => {
                 })}
               </View>
 
-              {/* ── Input ── */}
+              {/* Input */}
               <View style={styles.recipientInputWrapper}>
                 <Input
                   value={recipient}
@@ -767,7 +822,6 @@ const SendScreen = ({ navigation, route }) => {
                   }
                   containerStyle={styles.inputContainer}
                 />
-                {/* Spinner while resolving */}
                 {resolving && (
                   <View style={styles.resolveSpinner}>
                     <ActivityIndicator
@@ -778,7 +832,7 @@ const SendScreen = ({ navigation, route }) => {
                 )}
               </View>
 
-              {/* ── Resolved address chip ── */}
+              {/* Resolved address chip */}
               {resolvedAddress && recipientMode !== "address" && (
                 <Animated.View
                   style={[
@@ -917,7 +971,6 @@ const SendScreen = ({ navigation, route }) => {
                       {amount} {selectedToken.symbol}
                     </Text>
                   </View>
-                  {/* Show the actual destination address when resolving from identity */}
                   {recipientMode !== "address" && resolvedAddress && (
                     <View style={styles.summaryRow}>
                       <Text style={styles.summaryLabel}>To wallet</Text>
@@ -1006,34 +1059,6 @@ const SendScreen = ({ navigation, route }) => {
         </View>
       </Modal>
 
-      {/* ── Address Picker Modal ── */}
-      <Modal
-        visible={showAddressPicker}
-        animationType="slide"
-        transparent
-        onRequestClose={() => setShowAddressPicker(false)}
-      >
-        <View style={styles.modalOverlay}>
-          <View style={styles.modalContent}>
-            <View style={styles.modalHeader}>
-              <Text style={styles.modalTitle}>Recent Addresses</Text>
-              <TouchableOpacity
-                onPress={() => setShowAddressPicker(false)}
-                style={styles.modalClose}
-              >
-                <Ionicons name="close" size={24} color={theme.COLORS.text} />
-              </TouchableOpacity>
-            </View>
-            <FlatList
-              data={recentAddresses}
-              keyExtractor={(item, index) => index.toString()}
-              renderItem={renderAddressItem}
-              contentContainerStyle={styles.addressList}
-            />
-          </View>
-        </View>
-      </Modal>
-
       <QRScanner
         visible={showQRScanner}
         onClose={() => setShowQRScanner(false)}
@@ -1053,7 +1078,7 @@ const SendScreen = ({ navigation, route }) => {
           contractABI={txConfig.isNative ? null : txConfig.contractABI}
           functionName={txConfig.isNative ? null : txConfig.functionName}
           args={txConfig.isNative ? null : txConfig.args}
-          value={txConfig.isNative ? txConfig.value : txConfig.value}
+          value={txConfig.value}
           isNativeTransfer={txConfig.isNative}
           to={txConfig.isNative ? txConfig.to : null}
           chainSymbol={activeChain.symbol}
@@ -1069,14 +1094,8 @@ const SendScreen = ({ navigation, route }) => {
 
 const createStyles = (theme) =>
   StyleSheet.create({
-    container: {
-      flex: 1,
-      backgroundColor: theme.COLORS.background,
-    },
-    content: {
-      padding: 16,
-      paddingBottom: 24,
-    },
+    container: { flex: 1, backgroundColor: theme.COLORS.background },
+    content: { padding: 16, paddingBottom: 24 },
     loadingContainer: {
       flex: 1,
       justifyContent: "center",
@@ -1089,18 +1108,15 @@ const createStyles = (theme) =>
       color: theme.COLORS.textSecondary,
     },
 
-    // Header
     header: {
       flexDirection: "row",
       justifyContent: "space-between",
       alignItems: "center",
       marginBottom: 20,
     },
-    headerTitle: {
-      fontSize: 20,
-      fontWeight: "700",
-      color: theme.COLORS.text,
-    },
+    headerTitle: { fontSize: 20, fontWeight: "700", color: theme.COLORS.text },
+    headerRight: { flexDirection: "row", alignItems: "center", gap: 8 },
+    refreshIndicator: { marginRight: 4 },
     networkButton: {
       flexDirection: "row",
       alignItems: "center",
@@ -1115,7 +1131,6 @@ const createStyles = (theme) =>
     networkIcon: { width: 16, height: 16, borderRadius: 8 },
     networkText: { fontSize: 12, fontWeight: "500", color: theme.COLORS.text },
 
-    // Empty state
     emptyState: {
       alignItems: "center",
       justifyContent: "center",
@@ -1135,7 +1150,6 @@ const createStyles = (theme) =>
     },
     emptyButton: { marginTop: 8 },
 
-    // Sections
     section: { marginBottom: 20 },
     sectionHeader: {
       flexDirection: "row",
@@ -1150,7 +1164,6 @@ const createStyles = (theme) =>
       textTransform: "uppercase",
     },
     sectionHint: { fontSize: 11, color: theme.COLORS.textSecondary },
-    inputActions: { flexDirection: "row", gap: 6 },
     iconButton: {
       width: 28,
       height: 28,
@@ -1161,14 +1174,9 @@ const createStyles = (theme) =>
       borderWidth: 1,
       borderColor: theme.COLORS.border,
     },
-    maxButton: {
-      fontSize: 11,
-      fontWeight: "700",
-      color: theme.COLORS.primary,
-    },
+    maxButton: { fontSize: 11, fontWeight: "700", color: theme.COLORS.primary },
     inputContainer: { marginBottom: 0 },
 
-    // Token selector
     tokenSelector: {
       flexDirection: "row",
       justifyContent: "space-between",
@@ -1210,12 +1218,8 @@ const createStyles = (theme) =>
       color: theme.COLORS.textSecondary,
       marginTop: 2,
     },
-    selectorPlaceholder: {
-      fontSize: 14,
-      color: theme.COLORS.textSecondary,
-    },
+    selectorPlaceholder: { fontSize: 14, color: theme.COLORS.textSecondary },
 
-    // Recipient mode toggle
     modeToggle: {
       flexDirection: "row",
       backgroundColor: theme.COLORS.surface,
@@ -1236,14 +1240,9 @@ const createStyles = (theme) =>
       borderRadius: 8,
       borderWidth: 1,
       borderColor: "transparent",
-      backgroundColor: "transparent",
     },
-    modePillLabel: {
-      fontSize: 12,
-      fontWeight: "600",
-    },
+    modePillLabel: { fontSize: 12, fontWeight: "600" },
 
-    // Recipient input
     recipientInputWrapper: { position: "relative" },
     resolveSpinner: {
       position: "absolute",
@@ -1253,7 +1252,6 @@ const createStyles = (theme) =>
       justifyContent: "center",
     },
 
-    // Resolved address chip
     resolvedChip: {
       flexDirection: "row",
       alignItems: "center",
@@ -1286,7 +1284,6 @@ const createStyles = (theme) =>
       fontFamily: Platform.OS === "ios" ? "Menlo" : "monospace",
     },
 
-    // Amount
     amountInputWrapper: { position: "relative" },
     amountInputText: { fontSize: 20, fontWeight: "600" },
     amountSymbol: {
@@ -1299,7 +1296,6 @@ const createStyles = (theme) =>
       color: theme.COLORS.textSecondary,
     },
 
-    // Gas
     gasLoading: {
       flexDirection: "row",
       alignItems: "center",
@@ -1354,7 +1350,6 @@ const createStyles = (theme) =>
     },
     errorCardText: { flex: 1, fontSize: 11, color: theme.COLORS.error },
 
-    // Summary
     summaryCard: {
       backgroundColor: theme.COLORS.surface,
       borderRadius: 12,
@@ -1397,10 +1392,9 @@ const createStyles = (theme) =>
     },
     errorText: { fontSize: 11, color: theme.COLORS.error, marginTop: 6 },
 
-    // Modals
     modalOverlay: {
       flex: 1,
-      backgroundColor: "rgba(0, 0, 0, 0.5)",
+      backgroundColor: "rgba(0,0,0,0.5)",
       justifyContent: "flex-end",
     },
     modalContent: {
@@ -1417,11 +1411,7 @@ const createStyles = (theme) =>
       borderBottomWidth: 1,
       borderBottomColor: theme.COLORS.border,
     },
-    modalTitle: {
-      fontSize: 16,
-      fontWeight: "600",
-      color: theme.COLORS.text,
-    },
+    modalTitle: { fontSize: 16, fontWeight: "600", color: theme.COLORS.text },
     modalClose: { padding: 4 },
     tokenList: { padding: 16 },
     tokenItem: {
@@ -1443,23 +1433,16 @@ const createStyles = (theme) =>
       gap: 10,
       flex: 1,
     },
+    tokenIconOuterWrap: { position: "relative" },
     tokenLogo: { width: 32, height: 32, borderRadius: 16 },
     tokenItemInfo: { flex: 1 },
-    tokenItemHeader: {
-      flexDirection: "row",
-      alignItems: "center",
-      gap: 6,
-    },
+    tokenItemHeader: { flexDirection: "row", alignItems: "center", gap: 6 },
     tokenItemSymbol: {
       fontSize: 14,
       fontWeight: "600",
       color: theme.COLORS.text,
     },
-    sourceBadge: {
-      paddingHorizontal: 6,
-      paddingVertical: 2,
-      borderRadius: 4,
-    },
+    sourceBadge: { paddingHorizontal: 6, paddingVertical: 2, borderRadius: 4 },
     sourceBadgeText: {
       fontSize: 9,
       fontWeight: "600",
@@ -1478,30 +1461,6 @@ const createStyles = (theme) =>
     },
     tokenItemBalanceZero: { color: theme.COLORS.textSecondary },
     separator: { height: 8 },
-    addressList: { padding: 16 },
-    addressItem: {
-      flexDirection: "row",
-      alignItems: "center",
-      padding: 12,
-      borderRadius: 12,
-      backgroundColor: theme.COLORS.surface,
-      gap: 10,
-      marginBottom: 8,
-    },
-    addressIcon: {
-      width: 32,
-      height: 32,
-      borderRadius: 16,
-      backgroundColor: theme.COLORS.primary,
-      justifyContent: "center",
-      alignItems: "center",
-    },
-    addressInfo: { flex: 1 },
-    addressValue: {
-      fontSize: 12,
-      color: theme.COLORS.text,
-      fontFamily: Platform.OS === "ios" ? "Menlo" : "monospace",
-    },
   });
 
 export default SendScreen;

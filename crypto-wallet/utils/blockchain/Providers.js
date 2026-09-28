@@ -1,271 +1,228 @@
 // utils/providers.js
 import { ethers } from "ethers";
+import { AppState } from "react-native";
+
+// ─── Cache TTLs ───────────────────────────────────────────────────────────────
+
+const NETWORK_INFO_TTL = 60_000; // 1 min — chain metadata rarely changes
+const BLOCK_NUMBER_TTL = 12_000; // 12 s  — one ETH block
+const CLEANUP_INTERVAL = 60_000; // how often to evict expired cache entries
+
+// ─── Storage ──────────────────────────────────────────────────────────────────
+
+// Providers are keyed by `${chainId}-${rpcUrl}` so swapping RPC on the same
+// chain creates a fresh provider rather than reusing a stale one.
+const providerPool = new Map(); // cacheKey → ethers.JsonRpcProvider
+const networkInfoCache = new Map(); // cacheKey → { value, timestamp }
+const blockNumberCache = new Map(); // cacheKey → { value, timestamp }
+
+// ─── Validation ───────────────────────────────────────────────────────────────
 
 /**
- * Provider pool - reuse provider instances per chain
- * This prevents creating multiple connections to the same RPC endpoint
+ * Throws if `chain` is missing required fields.
+ * No logging — callers log if they need to.
  */
-const providerPool = new Map();
-
-/**
- * Cached network info with TTL
- */
-const networkInfoCache = new Map();
-const NETWORK_INFO_TTL = 60000; // 1 minute (block number changes frequently)
-
-/**
- * Block number cache with short TTL
- */
-const blockNumberCache = new Map();
-const BLOCK_NUMBER_TTL = 12000; // 12 seconds (approximate block time)
-
-/**
- * Validate chain object
- */
-export const validateChain = (chain, functionName) => {
-  console.log(`[${functionName}] Received chain:`, chain);
-
-  if (!chain) {
-    throw new Error(`[${functionName}] Chain object is undefined or null`);
-  }
-
-  if (!chain.id) {
-    console.error(
-      `[${functionName}] Chain object missing 'id' property:`,
-      JSON.stringify(chain),
-    );
-    throw new Error(`[${functionName}] Chain object is missing 'id' property`);
-  }
-
-  console.log(`[${functionName}] Chain ID:`, chain.id);
-  return true;
+export const validateChain = (chain, fnName = "validateChain") => {
+  if (!chain) throw new Error(`[${fnName}] chain is null/undefined`);
+  if (!chain.id) throw new Error(`[${fnName}] chain.id is missing`);
+  if (!chain.rpcUrl) throw new Error(`[${fnName}] chain.rpcUrl is missing`);
 };
 
+// ─── Provider factory ─────────────────────────────────────────────────────────
+
 /**
- * Create provider for reading blockchain data
- * CACHED - Reuses provider instances per chain
+ * Get (or create) a cached JsonRpcProvider for a chain.
+ *
+ * Passing `{ chainId, name }` to JsonRpcProvider tells ethers the network
+ * upfront — this avoids an automatic eth_chainId call on first use, saving
+ * one RPC round-trip per new provider.
  */
 export const createProviderForChain = (chain) => {
   validateChain(chain, "createProviderForChain");
 
-  // Check if provider already exists in pool
   const cacheKey = `${chain.id}-${chain.rpcUrl}`;
+  const existing = providerPool.get(cacheKey);
+  if (existing) return existing;
 
-  if (providerPool.has(cacheKey)) {
-    console.log(
-      `[createProviderForChain] Reusing cached provider for ${chain.name}`,
-    );
-    return providerPool.get(cacheKey);
-  }
+  const provider = new ethers.JsonRpcProvider(chain.rpcUrl, {
+    chainId: chain.id,
+    name: chain.name ?? String(chain.id),
+  });
 
-  // Create new provider and add to pool
-  console.log(
-    `[createProviderForChain] Creating new provider for ${chain.name}`,
-  );
-  const provider = new ethers.JsonRpcProvider(chain.rpcUrl);
-
-  // Add error event listener to detect stale connections
+  // Evict provider on network errors so the next call gets a fresh one
   provider.on("error", (error) => {
-    console.error(`[Provider] Error on ${chain.name}:`, error);
-    // Remove from pool on persistent errors
-    if (error.code === "NETWORK_ERROR") {
+    __DEV__ && console.warn(`[Provider:${chain.name}] error:`, error?.code);
+    if (error?.code === "NETWORK_ERROR") {
+      provider.removeAllListeners();
       providerPool.delete(cacheKey);
     }
   });
 
   providerPool.set(cacheKey, provider);
+  __DEV__ && console.log(`[Provider] created for ${chain.name}`);
   return provider;
 };
 
+// ─── Wallet factory ───────────────────────────────────────────────────────────
+
 /**
- * Create wallet for signing transactions
- * NOTE: Wallets are NOT cached (they contain private keys)
+ * Create a signing wallet. Never cached — wallets hold private keys.
  */
 export const createWalletForChain = (chain, privateKey) => {
   validateChain(chain, "createWalletForChain");
-  const provider = createProviderForChain(chain);
-  // Don't cache wallets - they're lightweight and contain sensitive data
-  return new ethers.Wallet(privateKey, provider);
+  return new ethers.Wallet(privateKey, createProviderForChain(chain));
 };
 
+// ─── Safe provider (with connectivity test) ───────────────────────────────────
+
 /**
- * Get provider instance with error handling
- * CACHED - Reuses existing provider
+ * Returns a provider for `chain`, testing connectivity for newly created ones.
+ * Uses the cached provider directly if it already exists.
  */
 export const getProviderSafe = async (chain) => {
-  try {
-    const provider = createProviderForChain(chain);
-    // Test connection only if provider is new (not cached)
-    const cacheKey = `${chain.id}-${chain.rpcUrl}`;
-    const isNewProvider = !providerPool.has(cacheKey);
+  validateChain(chain, "getProviderSafe");
 
-    if (isNewProvider) {
-      console.log(`[getProviderSafe] Testing new connection to ${chain.name}`);
+  const cacheKey = `${chain.id}-${chain.rpcUrl}`;
+  const isNew = !providerPool.has(cacheKey); // check BEFORE creating
+  const provider = createProviderForChain(chain);
+
+  if (isNew) {
+    try {
+      // One eth_chainId call to confirm the endpoint is reachable
       await provider.getNetwork();
+    } catch (error) {
+      provider.removeAllListeners();
+      providerPool.delete(cacheKey);
+      throw new Error(
+        `[getProviderSafe] ${chain.name} unreachable: ${error.message}`,
+      );
     }
-
-    return provider;
-  } catch (error) {
-    console.error(
-      `[getProviderSafe] Error connecting to ${chain.name}:`,
-      error,
-    );
-    // Remove failed provider from pool
-    const cacheKey = `${chain.id}-${chain.rpcUrl}`;
-    providerPool.delete(cacheKey);
-    throw new Error(`Failed to connect to ${chain.name}: ${error.message}`);
   }
+
+  return provider;
 };
 
+// ─── Block number ─────────────────────────────────────────────────────────────
+
 /**
- * Get current block number
- * CACHED - 12 second TTL (approximate block time)
+ * Current block number, cached for BLOCK_NUMBER_TTL ms.
+ * One eth_blockNumber call per cache miss.
  */
 export const getCurrentBlockNumber = async (chain) => {
-  try {
-    validateChain(chain, "getCurrentBlockNumber");
+  validateChain(chain, "getCurrentBlockNumber");
 
-    const cacheKey = `block-${chain.id}`;
-    const cached = blockNumberCache.get(cacheKey);
+  const cacheKey = `block-${chain.id}`;
+  const cached = blockNumberCache.get(cacheKey);
 
-    // Check if cache is still valid
-    if (cached && Date.now() - cached.timestamp < BLOCK_NUMBER_TTL) {
-      console.log(
-        `[getCurrentBlockNumber] Cache HIT for ${chain.name}: ${cached.value}`,
-      );
-      return cached.value;
-    }
-
-    // Fetch fresh block number
-    const provider = createProviderForChain(chain);
-    const blockNumber = await provider.getBlockNumber();
-
-    // Cache the result
-    blockNumberCache.set(cacheKey, {
-      value: blockNumber,
-      timestamp: Date.now(),
-    });
-
-    console.log(
-      `[getCurrentBlockNumber] Cache MISS for ${chain.name}: ${blockNumber}`,
-    );
-    return blockNumber;
-  } catch (error) {
-    console.error("[getCurrentBlockNumber] Error:", error);
-    throw error;
+  if (cached && Date.now() - cached.timestamp < BLOCK_NUMBER_TTL) {
+    return cached.value;
   }
+
+  const provider = createProviderForChain(chain);
+  const blockNumber = await provider.getBlockNumber();
+
+  blockNumberCache.set(cacheKey, { value: blockNumber, timestamp: Date.now() });
+  return blockNumber;
 };
 
+// ─── Network info ─────────────────────────────────────────────────────────────
+
 /**
- * Get network information
- * CACHED - 1 minute TTL
+ * Chain metadata, cached for NETWORK_INFO_TTL ms.
+ * One eth_chainId call per cache miss — does NOT also fetch block number
+ * (call getCurrentBlockNumber separately if you need it).
  */
 export const getNetworkInfo = async (chain) => {
-  try {
-    validateChain(chain, "getNetworkInfo");
+  validateChain(chain, "getNetworkInfo");
 
-    const cacheKey = `network-${chain.id}`;
-    const cached = networkInfoCache.get(cacheKey);
+  const cacheKey = `network-${chain.id}`;
+  const cached = networkInfoCache.get(cacheKey);
 
-    // Check if cache is still valid
-    if (cached && Date.now() - cached.timestamp < NETWORK_INFO_TTL) {
-      console.log(`[getNetworkInfo] Cache HIT for ${chain.name}`);
-      return cached.value;
-    }
-
-    // Fetch fresh network info
-    const provider = createProviderForChain(chain);
-    const network = await provider.getNetwork();
-    const blockNumber = await provider.getBlockNumber();
-
-    const result = {
-      chainId: Number(network.chainId),
-      name: network.name,
-      blockNumber,
-    };
-
-    // Cache the result
-    networkInfoCache.set(cacheKey, {
-      value: result,
-      timestamp: Date.now(),
-    });
-
-    console.log(`[getNetworkInfo] Cache MISS for ${chain.name}`);
-    return result;
-  } catch (error) {
-    console.error("[getNetworkInfo] Error:", error);
-    throw error;
+  if (cached && Date.now() - cached.timestamp < NETWORK_INFO_TTL) {
+    return cached.value;
   }
+
+  const provider = createProviderForChain(chain);
+  const network = await provider.getNetwork();
+
+  const result = {
+    chainId: Number(network.chainId),
+    name: network.name,
+  };
+
+  networkInfoCache.set(cacheKey, { value: result, timestamp: Date.now() });
+  return result;
 };
 
+// ─── Pool management ──────────────────────────────────────────────────────────
+
 /**
- * Clear provider pool (useful for testing or resetting connections)
+ * Destroy all cached providers and clear all caches.
+ * Call on logout or when switching accounts.
  */
 export const clearProviderPool = () => {
-  console.log("[clearProviderPool] Clearing all cached providers");
-
-  // Remove all event listeners before clearing
   for (const provider of providerPool.values()) {
     provider.removeAllListeners();
   }
-
   providerPool.clear();
   networkInfoCache.clear();
   blockNumberCache.clear();
+  __DEV__ && console.log("[Provider] pool cleared");
 };
 
-/**
- * Get provider pool statistics
- */
-export const getProviderPoolStats = () => {
-  return {
-    providers: providerPool.size,
-    networkInfoCached: networkInfoCache.size,
-    blockNumbersCached: blockNumberCache.size,
-    chains: Array.from(providerPool.keys()),
-  };
-};
+export const getProviderPoolStats = () => ({
+  providers: providerPool.size,
+  networkInfoCached: networkInfoCache.size,
+  blockNumbersCached: blockNumberCache.size,
+  chains: Array.from(providerPool.keys()),
+});
+
+// ─── Warmup ───────────────────────────────────────────────────────────────────
 
 /**
- * Periodic cleanup of expired caches
- */
-setInterval(() => {
-  const now = Date.now();
-
-  // Clean expired network info
-  for (const [key, value] of networkInfoCache.entries()) {
-    if (now - value.timestamp > NETWORK_INFO_TTL) {
-      networkInfoCache.delete(key);
-    }
-  }
-
-  // Clean expired block numbers
-  for (const [key, value] of blockNumberCache.entries()) {
-    if (now - value.timestamp > BLOCK_NUMBER_TTL) {
-      blockNumberCache.delete(key);
-    }
-  }
-}, 60000); // Clean every minute
-
-/**
- * Warmup provider connections for multiple chains
- * Useful on app initialization to pre-establish connections
+ * Pre-establish connections for multiple chains on app start.
+ * Uses getProviderSafe so each new provider is connectivity-tested once.
+ * Failures are swallowed — warmup is best-effort.
  */
 export const warmupProviders = async (chains) => {
-  console.log(`[warmupProviders] Warming up ${chains.length} providers...`);
-
-  const warmupPromises = chains.map(async (chain) => {
-    try {
-      await getProviderSafe(chain);
-      console.log(`[warmupProviders] ✓ ${chain.name} ready`);
-    } catch (error) {
-      console.error(`[warmupProviders] ✗ ${chain.name} failed:`, error.message);
-    }
-  });
-
-  await Promise.allSettled(warmupPromises);
-  console.log(
-    `[warmupProviders] Warmup complete. Stats:`,
-    getProviderPoolStats(),
+  await Promise.allSettled(
+    chains.map((chain) =>
+      getProviderSafe(chain).catch((err) => {
+        __DEV__ && console.warn(`[warmup] ${chain.name} failed:`, err.message);
+      }),
+    ),
   );
+  __DEV__ && console.log("[warmup] done.", getProviderPoolStats());
 };
+
+// ─── Cache cleanup ────────────────────────────────────────────────────────────
+// Only runs while the app is active — stops when backgrounded.
+// Cleaned up on module disposal (dev fast-refresh, etc.) via the returned handle.
+
+let _cleanupTimer = null;
+
+const scheduleCleanup = () => {
+  _cleanupTimer = setInterval(() => {
+    const now = Date.now();
+
+    for (const [key, val] of networkInfoCache.entries()) {
+      if (now - val.timestamp > NETWORK_INFO_TTL) networkInfoCache.delete(key);
+    }
+    for (const [key, val] of blockNumberCache.entries()) {
+      if (now - val.timestamp > BLOCK_NUMBER_TTL) blockNumberCache.delete(key);
+    }
+  }, CLEANUP_INTERVAL);
+};
+
+const stopCleanup = () => {
+  clearInterval(_cleanupTimer);
+  _cleanupTimer = null;
+};
+
+// Pause cleanup when app is backgrounded, resume when foregrounded
+AppState.addEventListener("change", (state) => {
+  if (state === "active" && !_cleanupTimer) scheduleCleanup();
+  if (state === "background" || state === "inactive") stopCleanup();
+});
+
+scheduleCleanup(); // start immediately on import

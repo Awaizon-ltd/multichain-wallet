@@ -53,8 +53,7 @@ const AssetCard = ({ asset, onPress }) => {
   const { COLORS, isDark } = useTheme();
   const scaleAnim = useRef(new Animated.Value(1)).current;
 
-  const { chain, balance, usdValue, price, priceChange24h, isZeroBalance } =
-    asset;
+  const { chain, name, balance, usdValue, price, priceChange24h } = asset;
 
   if (!__DEV__ && chain.testnet) return null;
 
@@ -82,27 +81,6 @@ const AssetCard = ({ asset, onPress }) => {
     wrapper: {
       marginBottom: SPACING.sm,
     },
-    card: {
-      backgroundColor: isDark ? COLORS.card : "#FFFFFF",
-      borderRadius: 18,
-      borderWidth: 1,
-      borderColor: isDark ? COLORS.borderStrong : COLORS.border,
-      overflow: "hidden",
-      shadowColor: isDark ? COLORS.primary : "#000",
-      shadowOffset: { width: 0, height: 6 },
-      shadowOpacity: isDark ? 0.15 : 0.07,
-      shadowRadius: 14,
-      elevation: 5,
-      opacity: isZeroBalance ? 0.55 : 1,
-    },
-
-    // ── Accent bar at top ──
-    accentBar: {
-      height: 2,
-      backgroundColor: change.isPositive ? COLORS.success : COLORS.error,
-      opacity: 0.7,
-    },
-
     body: {
       padding: SPACING.xs,
       paddingHorizontal:SPACING.md,
@@ -213,12 +191,7 @@ const AssetCard = ({ asset, onPress }) => {
       onPressOut={handlePressOut}
       style={styles.wrapper}
     >
-      <Animated.View
-        style={[styles.card, { transform: [{ scale: scaleAnim }] }]}
-      >
-        {/* Top accent line — green if positive, red if negative */}
-        <View style={styles.accentBar} />
-
+      <Animated.View style={{ transform: [{ scale: scaleAnim }] }}>
         <View style={styles.body}>
           {/* ── Icon ── */}
           <View style={styles.iconWrapper}>
@@ -230,7 +203,7 @@ const AssetCard = ({ asset, onPress }) => {
 
           {/* ── Chain info ── */}
           <View style={styles.center}>
-            <Text style={styles.chainName}>{chain.name}</Text>
+            <Text style={styles.chainName}>{name}</Text>
             <View style={styles.priceRow}>
               <Text style={styles.priceText}>${formatNumber(price, 2)}</Text>
               {priceChange24h !== undefined && priceChange24h !== null && (

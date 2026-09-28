@@ -15,26 +15,14 @@ import { withCache, nftCache } from "./NftsCache";
 
 // Chains that don't support Alchemy NFT APIs
 const CHAINS_WITHOUT_NFT_API_SUPPORT = [
-  5000, // Mantle Mainnet
-  5001, // Mantle Testnet
+  5042, // Arc — too new for Alchemy's NFT API
+  4663, // Robinhood Chain — too new for Alchemy's NFT API
   // Add other unsupported chains as needed
 ];
 
 // Popular NFT contract addresses for manual fetching
 const KNOWN_NFT_COLLECTIONS = {
-  5000: [
-    // Mantle Mainnet - Add known collections here
-    {
-      address: "0x...", // Example NFT collection
-      name: "Mantle NFTs",
-      symbol: "MNFT",
-      type: "ERC721",
-    },
-  ],
-  5001: [
-    // Mantle Testnet
-  ],
-  // Add other chains here
+  // Add known collections for Arc (5042) / Robinhood Chain (4663) here once verified.
 };
 
 // ============================================================================
@@ -167,10 +155,13 @@ const getNFTsManually = async (ownerAddress, chain) => {
  */
 const fetchNFTsFromExplorer = async (ownerAddress, chain) => {
   try {
-    // Mantle Explorer API
-    if (chain.id === 5000) {
+    // Chains without Alchemy NFT API support fall back to their block
+    // explorer's Etherscan-compatible API (both Etherscan and Blockscout —
+    // which is what Arc and Robinhood Chain's explorers run — expose this
+    // same module=account&action=tokennfttx shape).
+    if (CHAINS_WITHOUT_NFT_API_SUPPORT.includes(chain.id) && chain.explorer) {
       const response = await fetch(
-        `https://explorer.mantle.xyz/api?module=account&action=tokennfttx&address=${ownerAddress}&startblock=0&endblock=99999999&sort=desc`,
+        `${chain.explorer}/api?module=account&action=tokennfttx&address=${ownerAddress}&startblock=0&endblock=99999999&sort=desc`,
       );
       const data = await response.json();
 

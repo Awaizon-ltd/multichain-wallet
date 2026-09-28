@@ -78,5 +78,61 @@
     "symbol": "SQD",
     "decimals": 18,
     "logoURI": "https://assets.coingecko.com/coins/images/37869/standard/New_Logo_SQD_Icon.png?1720048443"
+  },
+  {
+    "chainId": 42161,
+    "address": "0x68731d6F14B827bBCfFbEBb62b19Daa18de1d79c",
+    "name": "idOS Token",
+    "symbol": "IDOS",
+    "decimals": 18,
+    "logoURI": "https://s2.coinmarketcap.com/static/img/coins/64x64/39596.png"
+  },
+  {
+    "chainId": 42161,
+    "address": "0x25118290e6A5f4139381D072181157035864099d",
+    "name": "RAIN",
+    "symbol": "RAIN",
+    "decimals": 18,
+    "logoURI": "https://coin-images.coingecko.com/coins/images/69134/large/Rain_logo_1_.png?1762952191"
+  },
+  {
+    "chainId": 42161,
+    "address": "0xFd086bC7CD5C481DCC9C85ebE478A1C0b69FCbb9",
+    "name": "USDT0",
+    "symbol": "USDT0",
+    "decimals": 6,
+    "logoURI": "https://coin-images.coingecko.com/coins/images/53705/large/usdt0.jpg?1737086183"
+  },
+  {
+    "chainId": 42161,
+    "address": "0x40461291347e1eCbb09499F3371D3f17f10d7159",
+    "name": "Tether Gold",
+    "symbol": "XAUt0",
+    "decimals": 6,
+    "logoURI": "https://coin-images.coingecko.com/coins/images/66560/large/XAUt0_Token_Icon_Gold.png?1749747942"
+  },
+  {
+    "chainId": 42161,
+    "address": "0x00000000eFE302BEAA2b3e6e1b18d08D69a9012a",
+    "name": "AUSD",
+    "symbol": "AUSD",
+    "decimals": 6,
+    "logoURI": "https://coin-images.coingecko.com/coins/images/39284/large/AUSD_1024px.png?1764684132"
+  },
+  {
+    "chainId": 42161,
+    "address": "0x26C358F7c5fEdB20a6ddEf108cD91Efb6B8Da0Cb",
+    "name": "Stable Mint USD",
+    "symbol": "USDSM",
+    "decimals": 18,
+    "logoURI": "https://assets.coingecko.com/coins/images/102173681/standard/USDSM-logo-2.png?1780931561"
+  },
+  {
+    "chainId": 42161,
+    "address": "0x12C2dE43878FB1A06C1Ead481f11E0C693a719c7",
+    "name": "DGrid AI",
+    "symbol": "DGAI",
+    "decimals": 18,
+    "logoURI": "https://coin-images.coingecko.com/coins/images/102175792/large/dgrid.png?1787573447"
   }
 ]

@@ -8,7 +8,7 @@ const {
   getLeaderboard,
   getWalletRank,
   getTopPairs,
-} = require("../services/SwapTrackingService");
+} = require("../services/swapTrackingService");
 
 // ─── Helpers ───────────────────────────────────────────────────────────────
 const TX_HASH_RE = /^0x[a-fA-F0-9]{64}$/;

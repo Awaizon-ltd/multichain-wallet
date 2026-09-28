@@ -89,26 +89,10 @@ export const PAYMENT_TOKENS = {
     },
   ],
 
-  // ── Mantle (5000) ─────────────────────────────────────────────────────────
-  5000: [
-    {
-      symbol: "USDT",
-      name: "Tether USD",
-      address: "0x201EBa5CC46D216Ce6DC03F6a759e8E766e956aE",
-      decimals: 6,
-      logo: `${TRUST}/ethereum/assets/0xdAC17F958D2ee523a2206206994597C13D831ec7/logo.png`,
-      enabled: true,
-    },
-    {
-      symbol: "USDC",
-      name: "USD Coin",
-      address: "0x09Bc4E0D864854c6aFB6eB9A9cdF58aC190D0dF9",
-      decimals: 6,
-      logo: `${TRUST}/ethereum/assets/0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48/logo.png`,
-      enabled: true,
-    },
-    // DAI not widely bridged on Mantle — add here when available
-  ],
+  // ── Arc (5042) / Robinhood Chain (4663) ────────────────────────────────────
+  // No verified ERC-20 stablecoin contract addresses on either chain yet —
+  // add entries here once confirmed (Arc's native asset is already USDC,
+  // so the native/gas token itself covers USDC payments there).
 
   // ── Avalanche (43114) — uncomment AVALANCHE in Chain.js first ─────────────
   // 43114: [

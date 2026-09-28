@@ -3,6 +3,10 @@ import { Alchemy, Network } from 'alchemy-sdk';
 import { ethers } from 'ethers';
 import { SUPPORTED_CHAINS } from '../constants/Chain';
 import { ERC20_ABI } from '../constants/abi';
+import {
+  getNativeBalance as getCachedNativeBalance,
+  getTokenBalance as getCachedTokenBalance,
+} from '../utils/blockchain/Balances';
 
 // Alchemy API Keys
 const ALCHEMY_API_KEYS = {
@@ -83,21 +87,15 @@ export const createWalletForChain = (chain, privateKey) => {
 };
 
 /**
- * Get native token balance
+ * Get native token balance.
+ * Routes through utils/blockchain/Balances.js's cached implementation
+ * (30s TTL, stale-while-revalidate) instead of calling the provider directly —
+ * this file used to be a completely uncached duplicate of that module.
  */
 export const getNativeBalance = async (address, chain) => {
   try {
     validateChain(chain, 'getNativeBalance');
-    
-    const provider = createProviderForChain(chain);
-    const balance = await provider.getBalance(address);
-    
-    return {
-      wei: balance.toString(),
-      formatted: ethers.formatEther(balance),
-      symbol: chain.symbol,
-      decimals: 18,
-    };
+    return await getCachedNativeBalance(address, chain);
   } catch (error) {
     console.error('Error fetching native balance:', error);
     throw error;
@@ -143,34 +141,14 @@ export const getTokenDetails = async (tokenAddress, chain) => {
 };
 
 /**
- * Get ERC-20 token balance
+ * Get ERC-20 token balance.
+ * Routes through utils/blockchain/Balances.js's cached implementation
+ * (30s TTL) instead of an uncached direct contract call.
  */
 export const getTokenBalance = async (tokenAddress, walletAddress, chain) => {
   try {
     validateChain(chain, 'getTokenBalance');
-    
-    const MINIMAL_ERC20_ABI = [
-      'function balanceOf(address) view returns (uint256)',
-      'function symbol() view returns (string)',
-      'function decimals() view returns (uint8)',
-    ];
-
-    const provider = createProviderForChain(chain);
-    const contract = new ethers.Contract(tokenAddress, MINIMAL_ERC20_ABI, provider);
-
-    const [balance, decimals, symbol] = await Promise.all([
-      contract.balanceOf(walletAddress),
-      contract.decimals(),
-      contract.symbol(),
-    ]);
-
-    return {
-      wei: balance.toString(),
-      formatted: ethers.formatUnits(balance, decimals),
-      symbol,
-      decimals: Number(decimals),
-      address: tokenAddress,
-    };
+    return await getCachedTokenBalance(tokenAddress, walletAddress, chain);
   } catch (error) {
     console.error('[getTokenBalance] Error:', error);
     throw error;

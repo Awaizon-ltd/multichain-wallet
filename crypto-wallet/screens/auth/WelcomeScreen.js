@@ -1,4 +1,4 @@
-// screens/welcome/MantisWelcomeScreen.js
+// screens/welcome/WelcomeScreen.js
 import React, { useEffect, useRef, useState } from "react";
 import {
   View,
@@ -8,470 +8,536 @@ import {
   TouchableOpacity,
   Animated,
   Image,
+  SafeAreaView,
+  StatusBar,
 } from "react-native";
 import { VideoView, useVideoPlayer } from "expo-video";
-import { LinearGradient } from "expo-linear-gradient";
 import { BlurView } from "expo-blur";
 import { Ionicons } from "@expo/vector-icons";
 import { useTheme } from "../../contexts/ThemeContext";
 
 const { width, height } = Dimensions.get("window");
 
-const WelcomeScreen = ({ navigation }) => {
-  // ✅ Add navigation prop
-  const { COLORS, isDark } = useTheme();
-  const [glitchActive, setGlitchActive] = useState(false);
+// ─── Pill stat item ───────────────────────────────────────────────────────────
+const StatPill = ({ label, COLORS }) => (
+  <View style={[pill.wrap, { borderColor: "rgba(247,200,74,0.22)" }]}>
+    <Text style={[pill.text, { color: COLORS.textSecondary }]}>{label}</Text>
+  </View>
+);
+const pill = StyleSheet.create({
+  wrap: {
+    paddingVertical: 5,
+    paddingHorizontal: 12,
+    borderRadius: 999,
+    borderWidth: 1,
+  },
+  text: {
+    fontSize: 11,
+    fontWeight: "600",
+    letterSpacing: 0.6,
+    textTransform: "uppercase",
+  },
+});
 
-  // New expo-video API
-  const player = useVideoPlayer(require("../../assets/video.mp4"), (player) => {
-    player.loop = true;
-    player.muted = true;
-    player.play();
+// ─── Main ─────────────────────────────────────────────────────────────────────
+const WelcomeScreen = ({ navigation }) => {
+  const { COLORS, isDark } = useTheme();
+
+  // ── Video ─────────────────────────────────────────────────────────────────
+  const player = useVideoPlayer(require("../../assets/video.mp4"), (p) => {
+    p.loop = true;
+    p.muted = true;
+    p.play();
   });
 
-  // Animation values
-  const fadeAnim = useRef(new Animated.Value(0)).current;
-  const slideAnim = useRef(new Animated.Value(50)).current;
-  const glitchAnim = useRef(new Animated.Value(0)).current;
-  const pulseAnim = useRef(new Animated.Value(1)).current;
+  // ── Animation refs ────────────────────────────────────────────────────────
+  const overlayFade = useRef(new Animated.Value(0)).current; // dark overlay
+  const logoFade = useRef(new Animated.Value(0)).current;
+  const logoSlide = useRef(new Animated.Value(-20)).current;
+  const panelSlide = useRef(new Animated.Value(120)).current; // bottom panel
+  const panelFade = useRef(new Animated.Value(0)).current;
+  const headlineFade = useRef(new Animated.Value(0)).current;
+  const headlineSlide = useRef(new Animated.Value(18)).current;
+  const subFade = useRef(new Animated.Value(0)).current;
+  const btnFade = useRef(new Animated.Value(0)).current;
+  const btnScale = useRef(new Animated.Value(0.94)).current;
+  const scanAnim = useRef(new Animated.Value(0)).current; // amber scan line
+  const glowPulse = useRef(new Animated.Value(0.55)).current;
+
+  // ── Mounted state to handle scan loop ────────────────────────────────────
+  const mounted = useRef(true);
+  useEffect(() => {
+    return () => {
+      mounted.current = false;
+    };
+  }, []);
 
   useEffect(() => {
-    // Entry animations
-    Animated.parallel([
-      Animated.timing(fadeAnim, {
+    // Staggered entry
+    Animated.sequence([
+      // 1. Overlay dims the video slightly
+      Animated.timing(overlayFade, {
         toValue: 1,
-        duration: 1000,
+        duration: 700,
         useNativeDriver: true,
       }),
-      Animated.timing(slideAnim, {
-        toValue: 0,
-        duration: 800,
-        useNativeDriver: true,
-      }),
-    ]).start();
-
-    // Continuous pulse animation
-    Animated.loop(
-      Animated.sequence([
-        Animated.timing(pulseAnim, {
-          toValue: 1.05,
-          duration: 2000,
+      // 2. Logo slides in from top
+      Animated.parallel([
+        Animated.timing(logoFade, {
+          toValue: 1,
+          duration: 500,
           useNativeDriver: true,
         }),
-        Animated.timing(pulseAnim, {
+        Animated.timing(logoSlide, {
+          toValue: 0,
+          duration: 460,
+          useNativeDriver: true,
+        }),
+      ]),
+      // 3. Panel rises
+      Animated.parallel([
+        Animated.timing(panelSlide, {
+          toValue: 0,
+          duration: 540,
+          useNativeDriver: true,
+        }),
+        Animated.timing(panelFade, {
           toValue: 1,
-          duration: 2000,
+          duration: 500,
+          useNativeDriver: true,
+        }),
+      ]),
+      // 4. Headline appears
+      Animated.parallel([
+        Animated.timing(headlineFade, {
+          toValue: 1,
+          duration: 400,
+          useNativeDriver: true,
+        }),
+        Animated.timing(headlineSlide, {
+          toValue: 0,
+          duration: 380,
+          useNativeDriver: true,
+        }),
+      ]),
+      // 5. Sub + button
+      Animated.parallel([
+        Animated.timing(subFade, {
+          toValue: 1,
+          duration: 360,
+          useNativeDriver: true,
+        }),
+        Animated.timing(btnFade, {
+          toValue: 1,
+          duration: 360,
+          useNativeDriver: true,
+        }),
+        Animated.timing(btnScale, {
+          toValue: 1,
+          duration: 400,
+          useNativeDriver: true,
+        }),
+      ]),
+    ]).start();
+
+    // Ambient amber glow pulse on the edge line
+    Animated.loop(
+      Animated.sequence([
+        Animated.timing(glowPulse, {
+          toValue: 1,
+          duration: 2200,
+          useNativeDriver: true,
+        }),
+        Animated.timing(glowPulse, {
+          toValue: 0.45,
+          duration: 2200,
           useNativeDriver: true,
         }),
       ]),
     ).start();
 
-    // Random glitch effect
-    const glitchInterval = setInterval(() => {
-      if (Math.random() > 0.7) {
-        triggerGlitch();
-      }
-    }, 3000);
-
-    return () => clearInterval(glitchInterval);
+    // Horizontal scan line that sweeps across the panel periodically
+    const runScan = () => {
+      if (!mounted.current) return;
+      scanAnim.setValue(0);
+      Animated.timing(scanAnim, {
+        toValue: 1,
+        duration: 1800,
+        useNativeDriver: true,
+      }).start(() => {
+        if (mounted.current) setTimeout(runScan, 4000);
+      });
+    };
+    setTimeout(runScan, 2600);
   }, []);
 
-  const triggerGlitch = () => {
-    setGlitchActive(true);
-    Animated.sequence([
-      Animated.timing(glitchAnim, {
-        toValue: 1,
-        duration: 50,
-        useNativeDriver: true,
-      }),
-      Animated.timing(glitchAnim, {
-        toValue: -1,
-        duration: 50,
-        useNativeDriver: true,
-      }),
-      Animated.timing(glitchAnim, {
-        toValue: 0.5,
-        duration: 50,
-        useNativeDriver: true,
-      }),
-      Animated.timing(glitchAnim, {
-        toValue: 0,
-        duration: 50,
-        useNativeDriver: true,
-      }),
-    ]).start(() => setGlitchActive(false));
-  };
-
-  // ✅ Handle Get Started - Navigate to Setup
-  const handleGetStarted = () => {
-    navigation.navigate("Setup");
-  };
-
-  const glitchTransform = glitchAnim.interpolate({
-    inputRange: [-1, 0, 1],
-    outputRange: [-5, 0, 5],
+  const scanTranslateX = scanAnim.interpolate({
+    inputRange: [0, 1],
+    outputRange: [-width, width * 1.2],
   });
 
+  const glowOpacity = glowPulse;
+
   return (
-    <View style={styles.container}>
-      {/* Video Background - New expo-video API */}
+    <View style={s.root}>
+      <StatusBar
+        translucent
+        backgroundColor="transparent"
+        barStyle="light-content"
+      />
+
+      {/* ── Full-bleed video ── */}
       <VideoView
         player={player}
-        style={styles.videoBackground}
+        style={s.video}
         contentFit="cover"
         nativeControls={false}
       />
 
-      {/* Dark Overlay for glass effect */}
-      <View
-        style={[
-          styles.overlay,
-          {
-            backgroundColor: isDark
-              ? "rgba(13, 20, 16, 0.75)"
-              : "rgba(245, 249, 233, 0.6)",
-          },
-        ]}
-      />
+      {/* ── Ambient dark gradient overlay (bottom-weighted) ── */}
+      <Animated.View style={[s.overlay, { opacity: overlayFade }]}>
+        {/* Top: very thin scrim so logo reads */}
+        <View style={s.overlayTop} />
+        {/* Bottom: heavy black to anchor the panel */}
+        <View style={s.overlayBottom} />
+      </Animated.View>
 
-      <Animated.View
-        style={[
-          styles.content,
-          {
-            opacity: fadeAnim,
-            transform: [{ translateY: slideAnim }],
-          },
-        ]}
-      >
-        {/* Logo Section with Glitch */}
+      {/* ── Safe area content ── */}
+      <SafeAreaView style={s.safe}>
+        {/* ── Logo / masthead — top left ── */}
         <Animated.View
           style={[
-            styles.logoContainer,
-            {
-              transform: [
-                { translateX: glitchTransform },
-                { scale: pulseAnim },
-              ],
-            },
+            s.masthead,
+            { opacity: logoFade, transform: [{ translateY: logoSlide }] },
           ]}
         >
-          {/* Logo */}
-          <View style={styles.logoWrapper}>
+          <View style={[s.logoMark, { borderColor: "rgba(247,200,74,0.35)" }]}>
             <Image
               source={require("../../assets/icon.png")}
-              style={styles.logo}
+              style={s.logoImg}
               resizeMode="contain"
             />
           </View>
-
-          <Text style={[styles.mantisText, { color: COLORS.text }]}>
-            Awarizon
-          </Text>
-          {glitchActive && (
-            <Text style={[styles.mantisGlitch, { color: COLORS.primary }]}>
-              Awarizon
-            </Text>
-          )}
+          <Text style={s.appName}>Awarizon</Text>
         </Animated.View>
 
-        {/* Dark Glass Card with Features */}
-        <View style={styles.glassWrapper}>
+        {/* ── Spacer pushes panel to bottom ── */}
+        <View style={{ flex: 1 }} />
+
+        {/* ── Bottom vault panel ── */}
+        <Animated.View
+          style={[
+            s.panel,
+            {
+              opacity: panelFade,
+              transform: [{ translateY: panelSlide }],
+            },
+          ]}
+        >
+          {/* Glowing amber top edge — THE signature element */}
+          <Animated.View style={[s.edgeLine, { opacity: glowOpacity }]} />
+          {/* Solid 1 px line always visible */}
+          <View style={s.edgeLineSolid} />
+
+          {/* Scan shimmer that crosses the top edge */}
+          <Animated.View
+            style={[
+              s.scanLine,
+              { transform: [{ translateX: scanTranslateX }] },
+            ]}
+          />
+
           <BlurView
-            intensity={isDark ? 60 : 40}
-            tint={isDark ? "dark" : "light"}
-            style={styles.glassBlur}
+            intensity={isDark ? 28 : 22}
+            tint="dark"
+            style={s.panelBlur}
           >
             <View
-              style={[
-                styles.glassOverlay,
-                {
-                  backgroundColor: isDark
-                    ? "rgba(22, 29, 24, 0.85)"
-                    : "rgba(255, 255, 255, 0.75)",
-                },
-              ]}
+              style={[s.panelInner, { backgroundColor: "rgba(10,8,4,0.82)" }]}
             >
-              <LinearGradient
-                colors={
-                  isDark
-                    ? ["rgba(168, 209, 79, 0.3)", "rgba(143, 188, 63, 0.15)"]
-                    : ["rgba(143, 188, 63, 0.4)", "rgba(168, 209, 79, 0.2)"]
-                }
-                style={styles.gradientBorder}
-              />
+              {/* Micro-label */}
+              <Text style={[s.microLabel, { color: COLORS.primary }]}>
+                NON-CUSTODIAL WALLET
+              </Text>
 
-              <View style={styles.glassContent}>
-                {/* Tagline */}
-                <View style={styles.tagline}>
-                  <Text style={[styles.taglineText, { color: COLORS.text }]}>
-                    Your Keys, Your Crypto
-                  </Text>
-                  <View
-                    style={[
-                      styles.taglineUnderline,
-                      { backgroundColor: COLORS.primary },
-                    ]}
-                  />
-                </View>
+              {/* Headline */}
+              <Animated.View
+                style={{
+                  opacity: headlineFade,
+                  transform: [{ translateY: headlineSlide }],
+                }}
+              >
+                <Text style={s.headline}>
+                  Own the{"\n"}
+                  <Text style={{ color: "#F7C84A" }}>chain.</Text>
+                </Text>
+              </Animated.View>
 
-                {/* Features */}
-                <View style={styles.featuresContainer}>
-                  <FeatureItem
-                    icon="shield-checkmark-outline"
-                    text="Safe for Web3 Navigation"
-                    color={COLORS}
-                    isDark={isDark}
-                  />
-                  <FeatureItem
-                    icon="globe-outline"
-                    text="Your Gateway to DeFi"
-                    color={COLORS}
-                    isDark={isDark}
-                  />
-                  <FeatureItem
-                    icon="lock-closed-outline"
-                    text="Non-Custodial & Secure"
-                    color={COLORS}
-                    isDark={isDark}
-                  />
-                </View>
+              {/* Sub */}
+              <Animated.Text
+                style={[
+                  s.sub,
+                  { color: COLORS.textSecondary, opacity: subFade },
+                ]}
+              >
+                Your keys, your assets — secured locally, never shared.
+              </Animated.Text>
 
-                {/* CTA Button - ✅ Updated with handler */}
+              {/* Stat pills */}
+              <Animated.View style={[s.pillRow, { opacity: subFade }]}>
+                <StatPill label="256-bit AES" COLORS={COLORS} />
+                <StatPill label="Multi-chain" COLORS={COLORS} />
+                <StatPill label="Open source" COLORS={COLORS} />
+              </Animated.View>
+
+              {/* CTA */}
+              <Animated.View
+                style={{
+                  opacity: btnFade,
+                  transform: [{ scale: btnScale }],
+                  marginTop: 24,
+                }}
+              >
                 <TouchableOpacity
-                  style={styles.ctaButton}
-                  activeOpacity={0.8}
-                  onPress={handleGetStarted}
+                  style={s.cta}
+                  onPress={() => navigation.navigate("Setup")}
+                  activeOpacity={0.82}
                 >
-                  <LinearGradient
-                    colors={
-                      isDark
-                        ? ["#A8D14F", "#8FBC3F", "#6E9430"]
-                        : ["#8FBC3F", "#A8D14F", "#B5D96A"]
-                    }
-                    style={styles.ctaGradient}
-                    start={{ x: 0, y: 0 }}
-                    end={{ x: 1, y: 0 }}
-                  >
-                    <Text style={styles.ctaText}>Get Started</Text>
-                    <Ionicons name="arrow-forward" size={20} color="#FFFFFF" />
-                  </LinearGradient>
+                  <View style={s.ctaInner}>
+                    <Text style={s.ctaText}>Get Started</Text>
+                    <View style={s.ctaArrow}>
+                      <Ionicons
+                        name="arrow-forward"
+                        size={18}
+                        color="#0A0804"
+                      />
+                    </View>
+                  </View>
                 </TouchableOpacity>
-              </View>
+              </Animated.View>
+
+              {/* Bottom note */}
+              <Animated.View style={[s.noteRow, { opacity: subFade }]}>
+                <Ionicons
+                  name="shield-checkmark"
+                  size={12}
+                  color="#F7C84A"
+                  style={{ opacity: 0.7 }}
+                />
+                <Text style={s.note}>No account. No cloud. 100% local.</Text>
+              </Animated.View>
             </View>
           </BlurView>
-        </View>
-
-        {/* Bottom Badge */}
-        <View style={styles.badge}>
-          <View
-            style={[
-              styles.badgeContent,
-              {
-                backgroundColor: isDark
-                  ? "rgba(58, 77, 44, 0.6)"
-                  : "rgba(212, 232, 184, 0.6)",
-                borderColor: isDark
-                  ? "rgba(168, 209, 79, 0.3)"
-                  : "rgba(143, 188, 63, 0.3)",
-              },
-            ]}
-          >
-            <Ionicons
-              name="shield-checkmark"
-              size={14}
-              color={COLORS.primary}
-            />
-            <Text style={[styles.badgeText, { color: COLORS.textSecondary }]}>
-              Non-Custodial • Open Source
-            </Text>
-          </View>
-        </View>
-      </Animated.View>
+        </Animated.View>
+      </SafeAreaView>
     </View>
   );
 };
 
-const FeatureItem = ({ icon, text, color, isDark }) => (
-  <View style={styles.featureItem}>
-    <View
-      style={[
-        styles.featureIconContainer,
-        {
-          backgroundColor: isDark
-            ? "rgba(168, 209, 79, 0.15)"
-            : "rgba(143, 188, 63, 0.15)",
-          borderColor: isDark
-            ? "rgba(168, 209, 79, 0.3)"
-            : "rgba(143, 188, 63, 0.3)",
-        },
-      ]}
-    >
-      <Ionicons name={icon} size={20} color={color.primary} />
-    </View>
-    <Text style={[styles.featureText, { color: color.text }]}>{text}</Text>
-  </View>
-);
+export default WelcomeScreen;
 
-const styles = StyleSheet.create({
-  container: {
+// ─── Styles ───────────────────────────────────────────────────────────────────
+const s = StyleSheet.create({
+  root: {
     flex: 1,
+    backgroundColor: "#000",
   },
-  videoBackground: {
+  video: {
     position: "absolute",
     top: 0,
     left: 0,
-    bottom: 0,
     right: 0,
-    width: width,
-    height: height,
+    bottom: 0,
+    width,
+    height,
   },
+
+  // Overlay — two-layer gradient simulation
   overlay: {
     position: "absolute",
     top: 0,
     left: 0,
-    bottom: 0,
     right: 0,
-  },
-  content: {
-    flex: 1,
-    width: "100%",
-    paddingHorizontal: 20,
-    justifyContent: "center",
-    alignItems: "center",
-  },
-  logoContainer: {
-    alignItems: "center",
-    marginBottom: 40,
-  },
-  logoWrapper: {
-    width: 100,
-    height: 100,
-    marginBottom: 16,
-  },
-  logo: {
-    width: "100%",
-    height: "100%",
-  },
-  mantisText: {
-    fontSize: 44,
-    fontWeight: "bold",
-    letterSpacing: 6,
-    textShadowColor: "rgba(168, 209, 79, 0.4)",
-    textShadowOffset: { width: 0, height: 3 },
-    textShadowRadius: 10,
-  },
-  mantisGlitch: {
-    position: "absolute",
     bottom: 0,
-    fontSize: 44,
-    fontWeight: "bold",
-    letterSpacing: 6,
-    opacity: 0.4,
-    transform: [{ translateX: 2 }, { translateY: 2 }],
   },
-  glassWrapper: {
-    width: "100%",
-    borderRadius: 20,
+  overlayTop: {
+    flex: 1,
+    backgroundColor: "transparent",
+  },
+  overlayBottom: {
+    height: height * 0.62,
+    // Deep black fade from below
+    backgroundColor: "rgba(4,3,2,0.72)",
+  },
+
+  safe: {
+    flex: 1,
+  },
+
+  // Masthead
+  masthead: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+    paddingHorizontal: 22,
+    paddingTop: 14,
+  },
+  logoMark: {
+    width: 38,
+    height: 38,
+    borderRadius: 10,
+    borderWidth: 1.5,
     overflow: "hidden",
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "rgba(15,12,6,0.55)",
   },
-  glassBlur: {
+  logoImg: {
+    width: 26,
+    height: 26,
+  },
+  appName: {
+    fontSize: 17,
+    fontWeight: "800",
+    color: "#F5EDD8",
+    letterSpacing: 1.8,
+    textTransform: "uppercase",
+  },
+
+  // Panel
+  panel: {
     width: "100%",
+    borderTopLeftRadius: 0,
+    borderTopRightRadius: 0,
+    overflow: "hidden",
+    position: "relative",
   },
-  glassOverlay: {
-    width: "100%",
-    borderRadius: 20,
-    borderWidth: 1,
-    borderColor: "rgba(168, 209, 79, 0.2)",
-  },
-  gradientBorder: {
+
+  // Amber edge
+  edgeLineSolid: {
     position: "absolute",
     top: 0,
     left: 0,
     right: 0,
-    height: 2,
+    height: 1.5,
+    backgroundColor: "#F7C84A",
+    zIndex: 10,
   },
-  glassContent: {
-    padding: 28,
+  edgeLine: {
+    position: "absolute",
+    top: -6,
+    left: 0,
+    right: 0,
+    height: 14,
+    backgroundColor: "#F7C84A",
+    zIndex: 9,
+    // Glow achieved via shadow
+    shadowColor: "#F7C84A",
+    shadowOffset: { width: 0, height: 0 },
+    shadowOpacity: 1,
+    shadowRadius: 14,
+    elevation: 0,
   },
-  tagline: {
-    alignItems: "center",
-    marginBottom: 28,
-  },
-  taglineText: {
-    fontSize: 18,
-    fontWeight: "700",
-    letterSpacing: 0.5,
-    textAlign: "center",
-    marginBottom: 8,
-  },
-  taglineUnderline: {
-    width: 60,
-    height: 3,
-    borderRadius: 2,
-  },
-  featuresContainer: {
-    marginBottom: 28,
-    gap: 14,
-  },
-  featureItem: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 14,
-  },
-  featureIconContainer: {
-    width: 40,
-    height: 40,
-    borderRadius: 10,
-    justifyContent: "center",
-    alignItems: "center",
-    borderWidth: 1,
-  },
-  featureText: {
-    fontSize: 14,
-    flex: 1,
-    fontWeight: "500",
-    letterSpacing: 0.2,
-  },
-  ctaButton: {
-    borderRadius: 14,
-    overflow: "hidden",
-    shadowColor: "#A8D14F",
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.3,
+
+  // Scan shimmer
+  scanLine: {
+    position: "absolute",
+    top: -2,
+    left: 0,
+    width: 80,
+    height: 6,
+    backgroundColor: "rgba(255, 220, 100, 0.55)",
+    zIndex: 11,
+    borderRadius: 3,
+    shadowColor: "#FFD966",
+    shadowOffset: { width: 0, height: 0 },
+    shadowOpacity: 0.9,
     shadowRadius: 8,
-    elevation: 4,
   },
-  ctaGradient: {
+
+  panelBlur: { width: "100%" },
+  panelInner: {
+    paddingTop: 28,
+    paddingBottom: 32,
+    paddingHorizontal: 26,
+  },
+
+  microLabel: {
+    fontSize: 10,
+    fontWeight: "800",
+    letterSpacing: 2.4,
+    marginBottom: 14,
+    opacity: 0.9,
+  },
+
+  headline: {
+    fontSize: 52,
+    fontWeight: "900",
+    color: "#F5EDD8",
+    letterSpacing: -1.5,
+    lineHeight: 54,
+    marginBottom: 16,
+  },
+
+  sub: {
+    fontSize: 14,
+    lineHeight: 21,
+    fontWeight: "400",
+    letterSpacing: 0.1,
+    marginBottom: 20,
+  },
+
+  pillRow: {
+    flexDirection: "row",
+    gap: 8,
+    flexWrap: "wrap",
+  },
+
+  // CTA
+  cta: {
+    borderRadius: 4,
+    overflow: "hidden",
+    backgroundColor: "#F7C84A",
+    shadowColor: "#F7C84A",
+    shadowOffset: { width: 0, height: 6 },
+    shadowOpacity: 0.35,
+    shadowRadius: 12,
+    elevation: 8,
+  },
+  ctaInner: {
     flexDirection: "row",
     alignItems: "center",
-    justifyContent: "center",
-    paddingVertical: 16,
-    paddingHorizontal: 28,
-    gap: 8,
+    justifyContent: "space-between",
+    paddingVertical: 17,
+    paddingHorizontal: 24,
   },
   ctaText: {
-    color: "#FFFFFF",
     fontSize: 16,
-    fontWeight: "700",
-    letterSpacing: 0.5,
+    fontWeight: "900",
+    color: "#0A0804",
+    letterSpacing: 0.4,
   },
-  badge: {
-    marginTop: 24,
+  ctaArrow: {
+    width: 32,
+    height: 32,
+    borderRadius: 2,
+    backgroundColor: "rgba(10,8,4,0.12)",
+    alignItems: "center",
+    justifyContent: "center",
   },
-  badgeContent: {
+
+  // Note
+  noteRow: {
     flexDirection: "row",
     alignItems: "center",
-    paddingVertical: 8,
-    paddingHorizontal: 16,
     gap: 6,
-    borderRadius: 100,
-    borderWidth: 1,
+    marginTop: 18,
+    justifyContent: "center",
   },
-  badgeText: {
+  note: {
     fontSize: 11,
-    fontWeight: "600",
+    color: "rgba(197,168,100,0.65)",
+    fontWeight: "500",
     letterSpacing: 0.3,
   },
 });
-
-export default WelcomeScreen;

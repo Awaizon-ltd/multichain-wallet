@@ -1,4 +1,4 @@
-import React, { useState, useRef, useEffect } from "react";
+import React, { useState, useRef, useEffect, useCallback } from "react";
 import { View, StyleSheet, BackHandler, Share } from "react-native";
 import * as Clipboard from "expo-clipboard";
 import AsyncStorage from "@react-native-async-storage/async-storage";
@@ -10,7 +10,7 @@ import BrowserHome from "../../components/browser/BrowserHome";
 import BrowserWebView from "../../components/browser/BrowserWebView";
 import ConnectionModal from "../../components/browser/ConnectionModal";
 import PasscodeModal from "../../components/modal/PasscodeModal";
-import ChainSwitcher from "../../components/wallet/ChainSwitcher";
+import NetworkManager from "../../components/wallet/NetworkManager";
 import { Web3Provider } from "../../utils/web3/web3Provider";
 import { DomainSecurityChecker } from "../../utils/security/DomainSecurityChecker";
 import Alert from "../../utils/Alert";
@@ -46,8 +46,8 @@ const CHAIN_NAMES = {
   7777777: "Zora",
   324: "zkSync Era",
   1101: "Polygon zkEVM",
-  5000: "Mantle",
-  5001: "Mantle Testnet",
+  5042: "Arc",
+  4663: "Robinhood Chain",
   169: "Manta Pacific",
   81457: "Blast",
   34443: "Mode",
@@ -85,8 +85,7 @@ const BrowserScreen = ({ navigation }) => {
   const [showPasscodeModal, setShowPasscodeModal] = useState(false);
   const [pendingRequest, setPendingRequest] = useState(null);
 
-  // Chain switcher
-  const [isChainSwitcherVisible, setChainSwitcherVisible] = useState(false);
+  const [isNetworkManagerVisible, setNetworkManagerVisible] = useState(false);
 
   const webViewRef = useRef(null);
   const web3ProviderRef = useRef(null);
@@ -454,55 +453,26 @@ const BrowserScreen = ({ navigation }) => {
     }
   };
 
-  // Chain switch request from dApp
+  // Auto-switch chain when dApp requests it — no confirmation prompt
   const handleChainSwitchRequest = async (id, requestedChainId) => {
-    const chainName = getChainName(requestedChainId);
     const targetChain = chains?.find((c) => c.id === requestedChainId);
 
-    Alert.alert(
-      "Switch Network",
-      `This site is requesting to switch to ${chainName}.${targetChain ? "" : "\n\nThis network is not available in your wallet."}`,
-      [
-        {
-          text: "Cancel",
-          onPress: () => {
-            sendResponseToWebView(
-              id,
-              { message: "User rejected network switch" },
-              null,
-            );
-          },
-          style: "cancel",
-        },
-        ...(targetChain
-          ? [
-              {
-                text: "Switch Network",
-                onPress: async () => {
-                  try {
-                    await switchChain(targetChain);
-                    sendResponseToWebView(id, null, null);
-                  } catch (error) {
-                    sendResponseToWebView(id, { message: error.message }, null);
-                  }
-                },
-              },
-            ]
-          : [
-              {
-                text: "View Chains",
-                onPress: () => {
-                  setChainSwitcherVisible(true);
-                  sendResponseToWebView(
-                    id,
-                    { message: "Network not available" },
-                    null,
-                  );
-                },
-              },
-            ]),
-      ],
-    );
+    if (targetChain) {
+      try {
+        await switchChain(targetChain);
+        sendResponseToWebView(id, null, null);
+        notifyChainChange();
+      } catch (error) {
+        sendResponseToWebView(id, { message: error.message }, null);
+      }
+    } else {
+      // Chain not supported in wallet — inform dApp per EIP-3326
+      sendResponseToWebView(
+        id,
+        { code: 4902, message: `Unrecognized chain ID: ${requestedChainId}` },
+        null,
+      );
+    }
   };
 
   // Show passcode modal for transactions/signing
@@ -546,16 +516,17 @@ const BrowserScreen = ({ navigation }) => {
     }
   };
 
-  // Handle chain mismatch detection
-  const handleChainMismatchDetected = (chainIdDecimal, chainIdHex) => {
-    console.log(
-      "[Browser] Chain mismatch detected:",
-      chainIdDecimal,
-      "current:",
-      activeChain.id,
-    );
+  // Auto-switch when the page's declared chain differs from active chain
+  const handleChainMismatchDetected = useCallback(async (chainIdDecimal) => {
     setDetectedChainId(chainIdDecimal);
-  };
+    const targetChain = chains?.find((c) => c.id === chainIdDecimal);
+    if (targetChain && targetChain.id !== activeChain?.id) {
+      try {
+        await switchChain(targetChain);
+        notifyChainChange();
+      } catch { /* ignore — non-blocking */ }
+    }
+  }, [chains, activeChain, switchChain]);
 
   // Send response to WebView
   const sendResponseToWebView = (id, error, result) => {
@@ -722,7 +693,7 @@ const BrowserScreen = ({ navigation }) => {
           handleUrlSubmit={handleUrlSubmit}
           activeChain={activeChain}
           isConnected={!!getCurrentDomainConnection()}
-          onChainPress={() => setChainSwitcherVisible(true)}
+          onChainPress={() => setNetworkManagerVisible(true)}
           onDisconnect={handleDisconnect}
           onRefresh={handleRefresh}
           onClose={handleClose}
@@ -744,7 +715,7 @@ const BrowserScreen = ({ navigation }) => {
           setInputUrl={setInputUrl}
           handleNavigate={handleNavigate}
           handleUrlSubmit={handleUrlSubmit}
-          onChainPress={() => setChainSwitcherVisible(true)}
+          onChainPress={() => setNetworkManagerVisible(true)}
         />
       ) : (
         <BrowserWebView
@@ -793,10 +764,10 @@ const BrowserScreen = ({ navigation }) => {
         subtitle="Enter your passcode to continue"
       />
 
-      {/* Chain Switcher */}
-      <ChainSwitcher
-        visible={isChainSwitcherVisible}
-        onClose={() => setChainSwitcherVisible(false)}
+      {/* Network Manager (view-only while browsing) */}
+      <NetworkManager
+        visible={isNetworkManagerVisible}
+        onClose={() => setNetworkManagerVisible(false)}
       />
     </View>
   );

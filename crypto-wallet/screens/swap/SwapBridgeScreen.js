@@ -1,4 +1,3 @@
-// SwapBridgeScreen.js
 import React, { useState, useRef } from "react";
 import {
   View,
@@ -7,12 +6,11 @@ import {
   StyleSheet,
   Animated,
   Dimensions,
-  StatusBar,
 } from "react-native";
 import { useTheme } from "../../contexts/ThemeContext";
-import { SPACING, FONTS, SHADOWS, BORDER_RADIUS } from "../../constants/Theme";
+import { SPACING, FONTS, SHADOWS } from "../../constants/Theme";
 import BridgeScreen from "./BridgeScreen";
-import SwapScreen from "./SwapScreen";
+import SwapScreen from "./SwapNewSCreen";
 
 const { width } = Dimensions.get("window");
 
@@ -21,24 +19,28 @@ const SwapBridgeScreen = () => {
   const [activeTab, setActiveTab] = useState(0);
   const translateX = useRef(new Animated.Value(0)).current;
 
+  // Bridge is powered by LI.FI, which routes between any supported chain —
+  // no need to gate the tab to a specific chain like the old Mantle-only bridge.
   const tabs = [
     { id: 0, label: "Swap", component: SwapScreen },
     { id: 1, label: "Bridge", component: BridgeScreen },
   ];
 
+  const tabWidth = width / tabs.length;
+
   const handleTabPress = (tabIndex) => {
     setActiveTab(tabIndex);
-
-    // Animate indicator
     Animated.spring(translateX, {
-      toValue: tabIndex * (width / 2),
+      toValue: tabIndex * tabWidth,
       useNativeDriver: true,
       tension: 80,
       friction: 10,
     }).start();
   };
 
-  const ActiveComponent = tabs[activeTab].component;
+  // If Bridge tab was active and we switch to a chain that hides it, reset to Swap
+  const safeActiveTab = activeTab >= tabs.length ? 0 : activeTab;
+  const ActiveComponent = tabs[safeActiveTab].component;
 
   return (
     <View style={[styles.container, { backgroundColor: COLORS.background }]}>
@@ -55,7 +57,7 @@ const SwapBridgeScreen = () => {
           {tabs.map((tab, index) => (
             <TouchableOpacity
               key={tab.id}
-              style={styles.tab}
+              style={[styles.tab, { width: tabWidth }]}
               onPress={() => handleTabPress(index)}
               activeOpacity={0.7}
             >
@@ -64,10 +66,10 @@ const SwapBridgeScreen = () => {
                   styles.tabText,
                   {
                     color:
-                      activeTab === index
+                      safeActiveTab === index
                         ? COLORS.primary
                         : COLORS.textSecondary,
-                    fontWeight: activeTab === index ? "600" : "500",
+                    fontWeight: safeActiveTab === index ? "600" : "500",
                     fontSize: FONTS.sizes.lg,
                   },
                 ]}
@@ -84,13 +86,14 @@ const SwapBridgeScreen = () => {
             styles.indicator,
             {
               backgroundColor: COLORS.primary,
+              width: tabWidth,
               transform: [{ translateX }],
             },
           ]}
         />
       </View>
 
-      {/* Content Area */}
+      {/* Content */}
       <View style={styles.content}>
         <ActiveComponent />
       </View>
@@ -99,45 +102,17 @@ const SwapBridgeScreen = () => {
 };
 
 const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-  },
+  container: { flex: 1 },
   tabBar: {
     paddingTop: SPACING.md,
     borderBottomWidth: 1,
     borderBottomColor: "transparent",
   },
-  tabContainer: {
-    flexDirection: "row",
-    paddingHorizontal: SPACING.md,
-  },
-  tab: {
-    flex: 1,
-    alignItems: "center",
-    paddingVertical: SPACING.md,
-  },
-  tabText: {
-    letterSpacing: 0.3,
-  },
-  indicator: {
-    height: 3,
-    width: width / 2,
-    borderTopLeftRadius: 3,
-    borderTopRightRadius: 3,
-  },
-  content: {
-    flex: 1,
-  },
-  // Placeholder styles (remove when using real components)
-  placeholderContainer: {
-    flex: 1,
-    justifyContent: "center",
-    alignItems: "center",
-  },
-  placeholderText: {
-    fontSize: 18,
-    fontWeight: "500",
-  },
+  tabContainer: { flexDirection: "row", paddingHorizontal: SPACING.md },
+  tab: { alignItems: "center", paddingVertical: SPACING.md },
+  tabText: { letterSpacing: 0.3 },
+  indicator: { height: 3, borderTopLeftRadius: 3, borderTopRightRadius: 3 },
+  content: { flex: 1 },
 });
 
 export default SwapBridgeScreen;

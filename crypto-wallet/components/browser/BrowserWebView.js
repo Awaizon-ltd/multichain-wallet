@@ -1,10 +1,597 @@
-import React, { forwardRef, useCallback, useRef, useEffect } from "react";
-import { View, StyleSheet } from "react-native";
+import React, {
+  forwardRef,
+  useCallback,
+  useRef,
+  useEffect,
+  useState,
+} from "react";
+import {
+  View,
+  Text,
+  StyleSheet,
+  TouchableOpacity,
+  Modal,
+  Image,
+  ActivityIndicator,
+} from "react-native";
 import { WebView } from "react-native-webview";
 import AsyncStorage from "@react-native-async-storage/async-storage";
+import { Ionicons } from "@expo/vector-icons";
 import { useTheme } from "../../contexts/ThemeContext";
 
+// ─── Constants ────────────────────────────────────────────────────────────────
+
 const DAPP_CONNECTIONS_KEY = "@dapp_connections";
+const PAGE_CACHE_KEY = "@browser_page_cache";
+
+const LOAD_TIMEOUT_MS = 20_000;
+const REQUEST_TIMEOUT_MS = 30_000;
+const CONNECTION_TTL_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
+
+// Pages visited within this window are served from disk cache first
+const PAGE_CACHE_TTL_MS = 24 * 60 * 60 * 1000; // 24 hours
+const PAGE_CACHE_MAX = 60; // max tracked URLs
+
+const BROWSER_UA =
+  "Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.6099.144 Mobile Safari/537.36";
+
+const MM_SCHEMES =
+  /^(metamask:\/\/|https:\/\/metamask\.app\.link\/|dapp:\/\/)/i;
+
+// ─── Helpers ──────────────────────────────────────────────────────────────────
+
+const getDomain = (url) => {
+  try {
+    return new URL(url).hostname;
+  } catch {
+    return null;
+  }
+};
+
+const hexChainId = (id) => `0x${Number(id).toString(16)}`;
+
+// Strip hash + trailing slash so the same page always maps to one key
+const normaliseUrl = (url = "") => url.split("#")[0].replace(/\/$/, "");
+
+const parseMetaMaskDeepLink = (url) => {
+  try {
+    const p = new URL(url);
+    const params = Object.fromEntries(p.searchParams.entries());
+    let originatorInfo = {};
+    if (params.originatorInfo) {
+      try {
+        originatorInfo = JSON.parse(atob(params.originatorInfo));
+      } catch {}
+    }
+    return {
+      channelId: params.channelId ?? null,
+      pubkey: params.pubkey ?? null,
+      comm: params.comm ?? "socket",
+      v: params.v ?? "2",
+      originatorInfo,
+    };
+  } catch {
+    return null;
+  }
+};
+
+// ─── Page cache store ─────────────────────────────────────────────────────────
+//
+// Maintains a lightweight { url → { timestamp, title, domain } } map in
+// AsyncStorage so we can pick the right WebView cacheMode per navigation:
+//
+//   LOAD_CACHE_ONLY          back / forward tap  → purely in-memory, no network
+//   LOAD_CACHE_ELSE_NETWORK  revisit < 24 h ago  → disk cache first, fallback network
+//   LOAD_DEFAULT             first visit / stale → normal network + cache headers
+//
+const PageCache = {
+  _map: null, // in-memory mirror; null means not yet loaded
+
+  async _hydrate() {
+    if (this._map) return;
+    try {
+      const raw = await AsyncStorage.getItem(PAGE_CACHE_KEY);
+      this._map = raw ? JSON.parse(raw) : {};
+    } catch {
+      this._map = {};
+    }
+  },
+
+  async _persist() {
+    try {
+      // Evict oldest entries beyond the cap before writing
+      const entries = Object.entries(this._map);
+      if (entries.length > PAGE_CACHE_MAX) {
+        entries.sort((a, b) => b[1].timestamp - a[1].timestamp);
+        this._map = Object.fromEntries(entries.slice(0, PAGE_CACHE_MAX));
+      }
+      await AsyncStorage.setItem(PAGE_CACHE_KEY, JSON.stringify(this._map));
+    } catch {}
+  },
+
+  async record(url, title = "") {
+    await this._hydrate();
+    this._map[normaliseUrl(url)] = {
+      timestamp: Date.now(),
+      title,
+      domain: getDomain(url),
+    };
+    this._persist(); // fire-and-forget
+  },
+
+  async getCacheMode(url, isBackForward = false) {
+    if (isBackForward) return "LOAD_CACHE_ONLY";
+    await this._hydrate();
+    const entry = this._map[normaliseUrl(url)];
+    if (!entry) return "LOAD_DEFAULT";
+    return Date.now() - entry.timestamp < PAGE_CACHE_TTL_MS
+      ? "LOAD_CACHE_ELSE_NETWORK"
+      : "LOAD_DEFAULT";
+  },
+
+  async getRecent(limit = 20) {
+    await this._hydrate();
+    return Object.values(this._map)
+      .sort((a, b) => b.timestamp - a.timestamp)
+      .slice(0, limit);
+  },
+
+  async clear() {
+    this._map = {};
+    try {
+      await AsyncStorage.removeItem(PAGE_CACHE_KEY);
+    } catch {}
+  },
+};
+
+// ─── Connection store ─────────────────────────────────────────────────────────
+
+const ConnectionStore = {
+  async load(domain, walletAddress) {
+    try {
+      const raw = await AsyncStorage.getItem(DAPP_CONNECTIONS_KEY);
+      return (raw ? JSON.parse(raw) : {})[`${domain}_${walletAddress}`] ?? null;
+    } catch {
+      return null;
+    }
+  },
+  async save(domain, walletAddress, chainId, chainSymbol) {
+    try {
+      const raw = await AsyncStorage.getItem(DAPP_CONNECTIONS_KEY);
+      const map = raw ? JSON.parse(raw) : {};
+      map[`${domain}_${walletAddress}`] = {
+        domain,
+        address: walletAddress,
+        chainId,
+        chainSymbol,
+        timestamp: Date.now(),
+      };
+      await AsyncStorage.setItem(DAPP_CONNECTIONS_KEY, JSON.stringify(map));
+    } catch {}
+  },
+  async remove(domain, walletAddress) {
+    try {
+      const raw = await AsyncStorage.getItem(DAPP_CONNECTIONS_KEY);
+      if (!raw) return;
+      const map = JSON.parse(raw);
+      delete map[`${domain}_${walletAddress}`];
+      await AsyncStorage.setItem(DAPP_CONNECTIONS_KEY, JSON.stringify(map));
+    } catch {}
+  },
+};
+
+// ─── Scripts ──────────────────────────────────────────────────────────────────
+
+const ANTI_BOT_SCRIPT = `
+(function () {
+  try { Object.defineProperty(navigator, 'webdriver', { get: () => undefined }); } catch {}
+
+  try {
+    const plugins = [
+      { name: 'Chrome PDF Plugin',  filename: 'internal-pdf-viewer', description: 'Portable Document Format' },
+      { name: 'Chrome PDF Viewer',  filename: 'mhjfbmdgcfjbbpaeojofohoefgiehjai', description: '' },
+      { name: 'Native Client',      filename: 'internal-nacl-plugin', description: '' },
+    ];
+    plugins.item = i => plugins[i];
+    plugins.namedItem = n => plugins.find(p => p.name === n) ?? null;
+    plugins.refresh = () => {};
+    Object.defineProperty(navigator, 'plugins', { get: () => plugins });
+  } catch {}
+
+  try {
+    const mimes = [
+      { type: 'application/pdf', description: 'Portable Document Format', suffixes: 'pdf' },
+      { type: 'application/x-google-chrome-pdf', description: 'Portable Document Format', suffixes: 'pdf' },
+    ];
+    mimes.item = i => mimes[i];
+    mimes.namedItem = t => mimes.find(m => m.type === t) ?? null;
+    Object.defineProperty(navigator, 'mimeTypes', { get: () => mimes });
+  } catch {}
+
+  const nav = {
+    languages: ['en-US', 'en'], platform: 'Linux armv8l',
+    vendor: 'Google Inc.', vendorSub: '', productSub: '20030107',
+    hardwareConcurrency: 4, deviceMemory: 4, maxTouchPoints: 5,
+  };
+  Object.entries(nav).forEach(([k, v]) => {
+    try { Object.defineProperty(navigator, k, { get: () => v }); } catch {}
+  });
+
+  const _pq = navigator.permissions?.query?.bind(navigator.permissions);
+  if (_pq) {
+    navigator.permissions.query = params =>
+      params.name === 'notifications'
+        ? Promise.resolve({ state: Notification.permission, onchange: null })
+        : _pq(params);
+  }
+
+  window.chrome ??= { runtime: {}, loadTimes: () => ({}), csi: () => ({}), app: {} };
+
+  try {
+    const _gp = WebGLRenderingContext.prototype.getParameter;
+    WebGLRenderingContext.prototype.getParameter = function (param) {
+      if (param === 37445) return 'Intel Inc.';
+      if (param === 37446) return 'Intel Iris OpenGL Engine';
+      return _gp.call(this, param);
+    };
+  } catch {}
+
+  // Cloudflare challenge detection via document.title mutation
+  const _title = Object.getOwnPropertyDescriptor(Document.prototype, 'title');
+  Object.defineProperty(document, 'title', {
+    get() { return _title.get.call(this); },
+    set(v) {
+      _title.set.call(this, v);
+      if (/just a moment|checking your browser|ddos-guard|cloudflare/i.test(v)) {
+        window.ReactNativeWebView?.postMessage(JSON.stringify({ type: 'CLOUDFLARE_CHALLENGE' }));
+      }
+    },
+    configurable: true,
+  });
+
+  // Send page title back to RN once DOM is ready so we can store it in cache
+  const sendTitle = () => {
+    if (document.title) {
+      window.ReactNativeWebView?.postMessage(
+        JSON.stringify({ type: 'PAGE_TITLE', title: document.title })
+      );
+    }
+  };
+  document.addEventListener('DOMContentLoaded', sendTitle, { once: true });
+  // Fallback for SPAs that set title after load
+  new MutationObserver(sendTitle).observe(
+    document.documentElement,
+    { subtree: true, characterData: true, childList: true }
+  );
+})();
+true;
+`;
+
+const DETECT_CHAIN_SCRIPT = `
+(function () {
+  const id =
+    window.ethereum?.chainId ||
+    window.__RUNTIME_CONFIG__?.chainId ||
+    (window.__wagmiConfig?.chains?.[0]?.id
+      ? '0x' + window.__wagmiConfig.chains[0].id.toString(16)
+      : null);
+  if (id) window.ReactNativeWebView?.postMessage(JSON.stringify({ type: 'CHAIN_DETECTED', chainId: id }));
+})();
+true;
+`;
+
+const buildWeb3Script = (walletAddress, chainId, connected) => `
+(function () {
+  let _connected = ${connected};
+  let _accounts  = _connected ? ["${walletAddress}"] : [];
+  let _chainId   = "${hexChainId(chainId)}";
+  let _reqId     = 0;
+  const _pending = new Map();
+  const _events  = { accountsChanged:[], chainChanged:[], connect:[], disconnect:[], message:[] };
+
+  const emit = (ev, data) => _events[ev]?.forEach(fn => { try { fn(data); } catch {} });
+
+  const provider = {
+    isMetaMask: true, isMobile: true, isStatus: true, isTrust: false,
+    _metamask: { isUnlocked: () => Promise.resolve(_connected) },
+    isConnected:    () => _connected,
+    selectedAddress: _connected ? "${walletAddress}" : null,
+    chainId:         "${hexChainId(chainId)}",
+    networkVersion:  "${chainId}",
+    _state: { accounts: _accounts, isConnected: _connected, isUnlocked: _connected,
+              initialized: true, isPermanentlyDisconnected: false },
+
+    request: async ({ method, params = [] }) => {
+      switch (method) {
+        case 'eth_accounts':  return _connected ? _accounts : [];
+        case 'eth_coinbase':  return _connected ? _accounts[0] : null;
+        case 'eth_chainId':   return _chainId;
+        case 'net_version':   return "${chainId}";
+      }
+      if (method === 'wallet_switchEthereumChain' || method === 'wallet_addEthereumChain') {
+        const req = params?.[0]?.chainId;
+        if (req) window.ReactNativeWebView?.postMessage(
+          JSON.stringify({ type: 'CHAIN_REQUESTED', chainId: req, method })
+        );
+      }
+      return new Promise((resolve, reject) => {
+        const id = _reqId++;
+        _pending.set(id, { resolve, reject, method });
+        window.ReactNativeWebView?.postMessage(
+          JSON.stringify({ type: 'WEB3_REQUEST', id, method, params })
+        );
+        setTimeout(() => {
+          if (!_pending.has(id)) return;
+          _pending.delete(id);
+          if (method === 'eth_requestAccounts') resolve(_accounts);
+          else if (/sign/i.test(method)) reject({ code: 4001, message: 'User rejected request' });
+          else reject(new Error('Request timed out'));
+        }, ${REQUEST_TIMEOUT_MS});
+      });
+    },
+
+    sendAsync(p, cb) {
+      this.request({ method: p.method, params: p.params })
+        .then(r  => cb(null, { jsonrpc: '2.0', id: p.id, result: r }))
+        .catch(e => cb(e, null));
+    },
+    send(p, cb) {
+      if (typeof p === 'string')  return this.request({ method: p, params: cb || [] });
+      if (Array.isArray(p))       return Promise.all(p.map(x => this.request(x)));
+      return this.sendAsync(p, cb);
+    },
+    enable() { return this.request({ method: 'eth_requestAccounts' }); },
+
+    on(ev, fn) {
+      (_events[ev] ??= []).push(fn);
+      if (ev === 'connect' && _connected) setTimeout(() => fn({ chainId: _chainId }), 0);
+      return this;
+    },
+    removeListener(ev, fn) {
+      if (_events[ev]) _events[ev] = _events[ev].filter(h => h !== fn);
+      return this;
+    },
+    removeAllListeners(ev) {
+      if (ev) _events[ev] = []; else Object.keys(_events).forEach(k => (_events[k] = []));
+      return this;
+    },
+
+    handleResponse(id, err, result) {
+      const p = _pending.get(id); if (!p) return; _pending.delete(id);
+      err ? p.reject(err) : p.resolve(result);
+    },
+    _handleAccountsChanged(accounts) {
+      _accounts = accounts; this.selectedAddress = accounts[0] || null;
+      emit('accountsChanged', accounts);
+    },
+    _handleChainChanged(id) {
+      _chainId = id; this.chainId = id;
+      this.networkVersion = String(parseInt(id, 16));
+      emit('chainChanged', id);
+    },
+  };
+
+  Object.defineProperty(window, 'ethereum', { get: () => provider, set: () => provider, configurable: false });
+  window.web3 ??= { currentProvider: provider, eth: { defaultAccount: provider.selectedAddress } };
+  window.handleWeb3Response = (id, err, r) => provider.handleResponse(id, err, r);
+
+  const info = { uuid: 'built-in-wallet', name: 'MetaMask',
+                 icon: 'data:image/svg+xml;base64,...', rdns: 'io.metamask' };
+  const announce = () => window.dispatchEvent(
+    new CustomEvent('eip6963:announceProvider', { detail: { info, provider } })
+  );
+  window.addEventListener('eip6963:requestProvider', announce);
+  setTimeout(announce, 0);
+
+  window.dispatchEvent(new Event('ethereum#initialized'));
+  if (_connected) setTimeout(() => emit('connect', { chainId: _chainId }), 50);
+  window.ReactNativeWebView?.postMessage(JSON.stringify({ type: 'WEB3_READY' }));
+})();
+true;
+`;
+
+const buildInjectionScript = (walletAddress, chainId, connected) =>
+  ANTI_BOT_SCRIPT +
+  (walletAddress && chainId
+    ? buildWeb3Script(walletAddress, chainId, connected)
+    : "");
+
+// ─── DeepLink connection modal ────────────────────────────────────────────────
+
+const DeepLinkModal = ({ request, onApprove, onReject, COLORS }) => {
+  if (!request) return null;
+  const { originatorInfo: o } = request;
+
+  return (
+    <Modal transparent animationType="slide" visible>
+      <View style={dl.overlay}>
+        <View
+          style={[
+            dl.sheet,
+            { backgroundColor: COLORS.card, borderColor: COLORS.border },
+          ]}
+        >
+          <View style={dl.header}>
+            <View
+              style={[
+                dl.iconWrap,
+                {
+                  backgroundColor: COLORS.primaryMuted,
+                  borderColor: COLORS.border,
+                },
+              ]}
+            >
+              {o?.icon ? (
+                <Image source={{ uri: o.icon }} style={dl.icon} />
+              ) : (
+                <Ionicons
+                  name="globe-outline"
+                  size={26}
+                  color={COLORS.primary}
+                />
+              )}
+            </View>
+            <Text style={[dl.siteName, { color: COLORS.text }]}>
+              {o?.title || o?.url || "Unknown dApp"}
+            </Text>
+            {!!o?.url && (
+              <Text style={[dl.siteUrl, { color: COLORS.textSecondary }]}>
+                {o.url}
+              </Text>
+            )}
+          </View>
+
+          <View
+            style={[
+              dl.infoBox,
+              { backgroundColor: COLORS.surface, borderColor: COLORS.border },
+            ]}
+          >
+            <Ionicons
+              name="wallet-outline"
+              size={15}
+              color={COLORS.primary}
+              style={{ marginTop: 1 }}
+            />
+            <View style={{ flex: 1 }}>
+              <Text style={[dl.infoTitle, { color: COLORS.text }]}>
+                Wallet connection request
+              </Text>
+              <Text style={[dl.infoBody, { color: COLORS.textSecondary }]}>
+                This dApp wants to connect via MetaMask mobile protocol.
+                Approving shares your wallet address with this site.
+              </Text>
+            </View>
+          </View>
+
+          {(o?.source || o?.apiVersion) && (
+            <View style={[dl.badge, { backgroundColor: COLORS.primaryMuted }]}>
+              <Text style={[dl.badgeText, { color: COLORS.primaryDark }]}>
+                {[
+                  o.source && `via ${o.source}`,
+                  o.apiVersion && `v${o.apiVersion}`,
+                ]
+                  .filter(Boolean)
+                  .join(" · ")}
+              </Text>
+            </View>
+          )}
+
+          <View style={dl.actions}>
+            <TouchableOpacity
+              onPress={onReject}
+              activeOpacity={0.8}
+              style={[
+                dl.btn,
+                {
+                  borderWidth: 1,
+                  borderColor: COLORS.border,
+                  backgroundColor: COLORS.surface,
+                },
+              ]}
+            >
+              <Text style={[dl.btnText, { color: COLORS.textSecondary }]}>
+                Reject
+              </Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              onPress={onApprove}
+              activeOpacity={0.8}
+              style={[dl.btn, { backgroundColor: COLORS.primary }]}
+            >
+              <Text style={[dl.btnText, { color: COLORS.background }]}>
+                Connect
+              </Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </View>
+    </Modal>
+  );
+};
+
+const dl = StyleSheet.create({
+  overlay: {
+    flex: 1,
+    backgroundColor: "rgba(0,0,0,0.65)",
+    justifyContent: "flex-end",
+  },
+  sheet: {
+    borderTopLeftRadius: 24,
+    borderTopRightRadius: 24,
+    borderWidth: 1,
+    padding: 24,
+    gap: 16,
+  },
+  header: { alignItems: "center", gap: 8 },
+  iconWrap: {
+    width: 64,
+    height: 64,
+    borderRadius: 16,
+    borderWidth: 1,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  icon: { width: 40, height: 40, borderRadius: 10 },
+  siteName: { fontSize: 17, fontWeight: "700", textAlign: "center" },
+  siteUrl: { fontSize: 11, textAlign: "center", opacity: 0.7 },
+  infoBox: {
+    flexDirection: "row",
+    gap: 10,
+    padding: 12,
+    borderRadius: 10,
+    borderWidth: 1,
+  },
+  infoTitle: { fontSize: 13, fontWeight: "600", marginBottom: 3 },
+  infoBody: { fontSize: 12, lineHeight: 18, opacity: 0.8 },
+  badge: {
+    alignSelf: "center",
+    paddingVertical: 4,
+    paddingHorizontal: 10,
+    borderRadius: 999,
+  },
+  badgeText: { fontSize: 11, fontWeight: "600" },
+  actions: { flexDirection: "row", gap: 10, marginTop: 4 },
+  btn: {
+    flex: 1,
+    paddingVertical: 14,
+    borderRadius: 12,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  btnText: { fontSize: 15, fontWeight: "700" },
+});
+
+// ─── Cloudflare challenge overlay ─────────────────────────────────────────────
+
+const CloudflareOverlay = ({ visible, COLORS }) => {
+  if (!visible) return null;
+  return (
+    <View style={[cfo.wrap, { backgroundColor: COLORS.background }]}>
+      <ActivityIndicator size="large" color={COLORS.primary} />
+      <Text style={[cfo.title, { color: COLORS.text }]}>
+        Checking your browser…
+      </Text>
+      <Text style={[cfo.sub, { color: COLORS.textSecondary }]}>
+        Completing security verification, please wait.
+      </Text>
+    </View>
+  );
+};
+
+const cfo = StyleSheet.create({
+  wrap: {
+    ...StyleSheet.absoluteFillObject,
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 14,
+    zIndex: 10,
+  },
+  title: { fontSize: 16, fontWeight: "700" },
+  sub: { fontSize: 13, opacity: 0.7, textAlign: "center", maxWidth: 260 },
+});
+
+// ─── Main component ───────────────────────────────────────────────────────────
 
 const BrowserWebView = forwardRef(
   (
@@ -17,494 +604,124 @@ const BrowserWebView = forwardRef(
       onMessage,
       onConnectionChange,
       onChainMismatchDetected,
+      onPageCached, // optional: ({ url, title, domain }) → feed into BrowserHome "recently visited"
     },
     ref,
   ) => {
     const { COLORS } = useTheme();
-    const loadingTimeoutRef = useRef(null);
+
+    const loadTimerRef = useRef(null);
     const lastUrlRef = useRef(currentUrl);
     const currentDomainRef = useRef(null);
     const detectedChainIdRef = useRef(null);
+    const isBackForwardRef = useRef(false); // flagged by parent before back/fwd nav
 
-    // Extract domain from URL
-    const getDomain = (url) => {
-      try {
-        const urlObj = new URL(url);
-        return urlObj.hostname;
-      } catch {
-        return null;
-      }
-    };
+    const [cacheMode, setCacheMode] = useState("LOAD_DEFAULT");
+    const [deepLinkRequest, setDeepLinkRequest] = useState(null);
+    const [showCfOverlay, setShowCfOverlay] = useState(false);
 
-    // Load persisted connections on mount
+    // ── Resolve the right cache mode whenever the target URL changes ──────────
     useEffect(() => {
-      loadPersistedConnection();
+      let cancelled = false;
+      PageCache.getCacheMode(currentUrl, isBackForwardRef.current).then(
+        (mode) => {
+          if (!cancelled) setCacheMode(mode);
+          isBackForwardRef.current = false; // consume the flag
+        },
+      );
+      return () => {
+        cancelled = true;
+      };
+    }, [currentUrl]);
+
+    // ── Expose cache controls + existing helpers via ref ──────────────────────
+    useEffect(() => {
+      if (!ref?.current) return;
+
+      // Called by BrowserHeader "Clear Cache" menu item
+      ref.current.clearPageCache = () => PageCache.clear();
+
+      // Feed BrowserHome "recently visited" rail from outside
+      ref.current.getRecentPages = (n = 20) => PageCache.getRecent(n);
+
+      // Must be called by parent BEFORE triggering goBack() / goForward()
+      // so the next URL resolves to LOAD_CACHE_ONLY
+      ref.current.markBackForwardNav = () => {
+        isBackForwardRef.current = true;
+      };
+
+      ref.current.clearDappConnection = () => {
+        if (currentDomainRef.current && wallet?.address)
+          ConnectionStore.remove(currentDomainRef.current, wallet.address);
+      };
+      ref.current.getDetectedChainId = () => detectedChainIdRef.current;
+    });
+
+    // ── Connection persistence ────────────────────────────────────────────────
+
+    useEffect(() => {
+      const domain = getDomain(currentUrl);
+      if (!domain || !wallet?.address) return;
+      ConnectionStore.load(domain, wallet.address).then((saved) => {
+        if (!saved) return;
+        if (
+          Date.now() - saved.timestamp < CONNECTION_TTL_MS &&
+          saved.chainId === activeChain?.id
+        )
+          onConnectionChange?.(true, domain);
+      });
     }, [currentUrl, wallet?.address]);
 
-    // Save connection when it changes
     useEffect(() => {
-      if (isConnected && currentDomainRef.current) {
-        saveConnection(currentDomainRef.current);
-      }
+      if (isConnected && currentDomainRef.current && wallet?.address)
+        ConnectionStore.save(
+          currentDomainRef.current,
+          wallet.address,
+          activeChain?.id,
+          activeChain?.symbol,
+        );
     }, [isConnected, wallet?.address, activeChain?.id]);
 
-    const loadPersistedConnection = async () => {
-      try {
-        const domain = getDomain(currentUrl);
-        if (!domain || !wallet?.address) return;
+    // ── Deep link handlers ────────────────────────────────────────────────────
 
-        const stored = await AsyncStorage.getItem(DAPP_CONNECTIONS_KEY);
-        if (stored) {
-          const connections = JSON.parse(stored);
-          const key = `${domain}_${wallet.address}`;
+    const handleDeepLinkApprove = useCallback(() => {
+      if (!deepLinkRequest) return;
+      const domain = deepLinkRequest.originatorInfo?.url
+        ? getDomain(deepLinkRequest.originatorInfo.url)
+        : currentDomainRef.current;
+      onConnectionChange?.(true, domain);
+      setDeepLinkRequest(null);
+    }, [deepLinkRequest, onConnectionChange]);
 
-          if (connections[key]) {
-            const savedConnection = connections[key];
-            // Auto-connect if chain matches and connection is recent (within 7 days)
-            const isRecent =
-              Date.now() - savedConnection.timestamp < 7 * 24 * 60 * 60 * 1000;
+    const handleDeepLinkReject = useCallback(
+      () => setDeepLinkRequest(null),
+      [],
+    );
 
-            if (isRecent && savedConnection.chainId === activeChain?.id) {
-              console.log("[DApp] Auto-connecting to:", domain);
-              onConnectionChange?.(true, domain);
-            }
-          }
-        }
-      } catch (error) {
-        console.error("[DApp] Error loading persisted connection:", error);
-      }
-    };
-
-    const saveConnection = async (domain) => {
-      try {
-        if (!domain || !wallet?.address) return;
-
-        const stored = await AsyncStorage.getItem(DAPP_CONNECTIONS_KEY);
-        const connections = stored ? JSON.parse(stored) : {};
-
-        const key = `${domain}_${wallet.address}`;
-        connections[key] = {
-          domain,
-          address: wallet.address,
-          chainId: activeChain.id,
-          chainSymbol: activeChain.symbol,
-          timestamp: Date.now(),
-        };
-
-        await AsyncStorage.setItem(
-          DAPP_CONNECTIONS_KEY,
-          JSON.stringify(connections),
-        );
-        console.log("[DApp] Connection saved for:", domain);
-      } catch (error) {
-        console.error("[DApp] Error saving connection:", error);
-      }
-    };
-
-    const removeConnection = async (domain) => {
-      try {
-        if (!domain || !wallet?.address) return;
-
-        const stored = await AsyncStorage.getItem(DAPP_CONNECTIONS_KEY);
-        if (stored) {
-          const connections = JSON.parse(stored);
-          const key = `${domain}_${wallet.address}`;
-          delete connections[key];
-          await AsyncStorage.setItem(
-            DAPP_CONNECTIONS_KEY,
-            JSON.stringify(connections),
-          );
-          console.log("[DApp] Connection removed for:", domain);
-        }
-      } catch (error) {
-        console.error("[DApp] Error removing connection:", error);
-      }
-    };
-
-    // Detect chain ID from dApp's window.ethereum or requests
-    const detectChainIdScript = `
-      (function() {
-        // Try to detect requested chain from various sources
-        let detectedChainId = null;
-        
-        // Method 1: Check if dApp has a preferred chain in config
-        if (window.ethereum && window.ethereum.chainId) {
-          detectedChainId = window.ethereum.chainId;
-        }
-        
-        // Method 2: Check common dApp configuration patterns
-        if (window.__RUNTIME_CONFIG__ && window.__RUNTIME_CONFIG__.chainId) {
-          detectedChainId = window.__RUNTIME_CONFIG__.chainId;
-        }
-        
-        // Method 3: Check for Wagmi/RainbowKit config
-        if (window.__wagmiConfig && window.__wagmiConfig.chains) {
-          const defaultChain = window.__wagmiConfig.chains[0];
-          if (defaultChain && defaultChain.id) {
-            detectedChainId = '0x' + defaultChain.id.toString(16);
-          }
-        }
-        
-        // Send detected chain to React Native
-        if (detectedChainId) {
-          window.ReactNativeWebView?.postMessage(JSON.stringify({
-            type: 'CHAIN_DETECTED',
-            chainId: detectedChainId
-          }));
-        }
-      })();
-      true;
-    `;
-
-    const getWeb3InjectionScript = () => {
-      if (!wallet?.address || !activeChain) {
-        return "";
-      }
-
-      const selectedAddress = isConnected ? `"${wallet.address}"` : "null";
-
-      return `
-      (function() {
-        console.log('[Web3Bridge] Aggressive initialization starting...');
-        
-        // Prevent page from redirecting to external MetaMask
-        const originalOpen = window.open;
-        window.open = function(url, ...args) {
-          if (url && (url.includes('metamask') || url.includes('deeplink'))) {
-            console.log('[Web3Bridge] Blocked external MetaMask redirect:', url);
-            return null;
-          }
-          return originalOpen.call(window, url, ...args);
-        };
-
-        // Block MetaMask deep links
-        const originalSetTimeout = window.setTimeout;
-        window.setTimeout = function(fn, delay, ...args) {
-          if (typeof fn === 'string' && fn.includes('metamask')) {
-            console.log('[Web3Bridge] Blocked MetaMask setTimeout redirect');
-            return null;
-          }
-          return originalSetTimeout.call(window, fn, delay, ...args);
-        };
-
-        // Intercept location changes
-        const originalPushState = history.pushState;
-        const originalReplaceState = history.replaceState;
-        
-        history.pushState = function(state, title, url) {
-          if (url && typeof url === 'string' && url.includes('metamask')) {
-            console.log('[Web3Bridge] Blocked MetaMask navigation');
-            return;
-          }
-          return originalPushState.apply(history, arguments);
-        };
-        
-        history.replaceState = function(state, title, url) {
-          if (url && typeof url === 'string' && url.includes('metamask')) {
-            console.log('[Web3Bridge] Blocked MetaMask navigation');
-            return;
-          }
-          return originalReplaceState.apply(history, arguments);
-        };
-
-        const pendingRequests = new Map();
-        let requestId = 0;
-        let isConnected = ${isConnected};
-        let currentAccounts = isConnected ? [${selectedAddress}] : [];
-        let requestedChainId = null;
-
-        const eventHandlers = {
-          accountsChanged: [],
-          chainChanged: [],
-          connect: [],
-          disconnect: [],
-          message: []
-        };
-
-        const emitEvent = (event, data) => {
-          console.log('[Web3Bridge] Emitting event:', event, data);
-          if (eventHandlers[event]) {
-            eventHandlers[event].forEach(handler => {
-              try {
-                handler(data);
-              } catch (e) {
-                console.error('[Web3Bridge] Event handler error:', e);
-              }
-            });
-          }
-        };
-
-        // Core ethereum provider
-        const ethereumProvider = {
-          isMetaMask: true,
-          isMobile: true,
-          isStatus: true,
-          isTrust: false,
-          _metamask: {
-            isUnlocked: () => Promise.resolve(isConnected)
-          },
-          isConnected: () => isConnected,
-          selectedAddress: isConnected ? ${selectedAddress} : null,
-          chainId: "0x${activeChain.id.toString(16)}",
-          networkVersion: "${activeChain.id}",
-          _events: eventHandlers,
-          _state: {
-            accounts: currentAccounts,
-            isConnected: isConnected,
-            isUnlocked: isConnected,
-            initialized: true,
-            isPermanentlyDisconnected: false
-          },
-          
-          request: async ({ method, params = [] }) => {
-            console.log('[Web3] Request:', method, params);
-            
-            // Capture requested chain from wallet_addEthereumChain or wallet_switchEthereumChain
-            if (method === 'wallet_addEthereumChain' || method === 'wallet_switchEthereumChain') {
-              if (params[0] && params[0].chainId) {
-                requestedChainId = params[0].chainId;
-                console.log('[Web3] Detected requested chain:', requestedChainId);
-                
-                // Notify React Native about chain request
-                window.ReactNativeWebView?.postMessage(JSON.stringify({
-                  type: 'CHAIN_REQUESTED',
-                  chainId: requestedChainId,
-                  method: method
-                }));
-              }
-            }
-            
-            // Handle some methods immediately for better performance
-            switch(method) {
-              case 'eth_accounts':
-                return isConnected ? currentAccounts : [];
-              
-              case 'eth_chainId':
-                return "0x${activeChain.id.toString(16)}";
-              
-              case 'net_version':
-                return "${activeChain.id}";
-              
-              case 'eth_coinbase':
-                return isConnected ? currentAccounts[0] : null;
-              
-              case 'wallet_switchEthereumChain':
-              case 'wallet_addEthereumChain':
-                // Let React Native handle chain switching
-                console.log('[Web3] Chain switch/add requested:', params);
-                break;
-            }
-            
-            const id = requestId++;
-            
-            return new Promise((resolve, reject) => {
-              pendingRequests.set(id, { resolve, reject, method });
-              
-              window.ReactNativeWebView.postMessage(JSON.stringify({
-                type: 'WEB3_REQUEST',
-                id,
-                method,
-                params,
-                requestedChainId: requestedChainId
-              }));
-              
-              setTimeout(() => {
-                if (pendingRequests.has(id)) {
-                  pendingRequests.delete(id);
-                  console.warn('[Web3] Request timeout:', method);
-                  
-                  if (method === 'eth_requestAccounts') {
-                    resolve(currentAccounts);
-                  } else if (method === 'personal_sign' || method === 'eth_signTypedData_v4') {
-                    reject({ code: 4001, message: 'User rejected request' });
-                  } else {
-                    reject(new Error('Request timeout'));
-                  }
-                }
-              }, 30000);
-            });
-          },
-          
-          handleResponse: (id, error, result) => {
-            const pending = pendingRequests.get(id);
-            if (pending) {
-              pendingRequests.delete(id);
-              if (error) {
-                pending.reject(error);
-              } else {
-                pending.resolve(result);
-              }
-            }
-          },
-          
-          sendAsync: function(payload, callback) {
-            console.log('[Web3] sendAsync:', payload.method);
-            this.request({ method: payload.method, params: payload.params })
-              .then(result => callback(null, { jsonrpc: '2.0', id: payload.id, result }))
-              .catch(error => callback(error, null));
-          },
-          
-          send: function(payload, callback) {
-            if (typeof payload === 'string') {
-              console.log('[Web3] send (method):', payload);
-              return this.request({ method: payload, params: callback || [] });
-            }
-            if (Array.isArray(payload)) {
-              console.log('[Web3] send (batch):', payload.length);
-              return Promise.all(payload.map(p => 
-                this.request({ method: p.method, params: p.params })
-              ));
-            }
-            console.log('[Web3] send (payload):', payload.method);
-            return this.sendAsync(payload, callback);
-          },
-          
-          enable: async function() {
-            console.log('[Web3] enable() called');
-            return this.request({ method: 'eth_requestAccounts' });
-          },
-          
-          on: function(event, callback) {
-            console.log('[Web3] Event listener added:', event);
-            if (!eventHandlers[event]) {
-              eventHandlers[event] = [];
-            }
-            eventHandlers[event].push(callback);
-            
-            if (event === 'connect' && isConnected) {
-              setTimeout(() => callback({ chainId: this.chainId }), 0);
-            }
-            
-            return this;
-          },
-          
-          removeListener: function(event, callback) {
-            console.log('[Web3] Event listener removed:', event);
-            if (eventHandlers[event]) {
-              const index = eventHandlers[event].indexOf(callback);
-              if (index > -1) {
-                eventHandlers[event].splice(index, 1);
-              }
-            }
-            return this;
-          },
-
-          removeAllListeners: function(event) {
-            if (event && eventHandlers[event]) {
-              eventHandlers[event] = [];
-            } else if (!event) {
-              Object.keys(eventHandlers).forEach(key => {
-                eventHandlers[key] = [];
-              });
-            }
-            return this;
-          },
-
-          _handleAccountsChanged: function(accounts) {
-            currentAccounts = accounts;
-            this.selectedAddress = accounts[0] || null;
-            emitEvent('accountsChanged', accounts);
-          },
-
-          _handleChainChanged: function(chainId) {
-            this.chainId = chainId;
-            this.networkVersion = String(parseInt(chainId, 16));
-            emitEvent('chainChanged', chainId);
-          }
-        };
-
-        // Aggressively set ethereum provider
-        Object.defineProperty(window, 'ethereum', {
-          get: () => ethereumProvider,
-          set: (val) => {
-            console.log('[Web3Bridge] Blocked attempt to override ethereum provider');
-            return ethereumProvider;
-          },
-          configurable: false
-        });
-
-        if (!window.web3) {
-          window.web3 = {
-            currentProvider: ethereumProvider,
-            eth: {
-              defaultAccount: ethereumProvider.selectedAddress
-            }
-          };
-        }
-
-        window.handleWeb3Response = (id, error, result) => {
-          ethereumProvider.handleResponse(id, error, result);
-        };
-
-        window.dispatchEvent(new Event('ethereum#initialized'));
-        
-        if (isConnected) {
-          setTimeout(() => {
-            emitEvent('connect', { chainId: ethereumProvider.chainId });
-            console.log('[Web3Bridge] Connected event emitted');
-          }, 50);
-        }
-
-        const announceProvider = () => {
-          window.dispatchEvent(new CustomEvent('eip6963:announceProvider', {
-            detail: {
-              info: {
-                uuid: 'built-in-wallet',
-                name: 'MetaMask',
-                icon: 'data:image/svg+xml;base64,...',
-                rdns: 'io.metamask'
-              },
-              provider: ethereumProvider
-            }
-          }));
-        };
-
-        window.addEventListener('eip6963:requestProvider', announceProvider);
-        setTimeout(announceProvider, 0);
-        
-        console.log('[Web3Bridge] Provider aggressively initialized');
-        console.log('[Web3Bridge] Connected:', isConnected);
-        console.log('[Web3Bridge] Address:', ethereumProvider.selectedAddress);
-        console.log('[Web3Bridge] Chain ID:', ethereumProvider.chainId);
-
-        window.ReactNativeWebView?.postMessage(JSON.stringify({
-          type: 'WEB3_READY'
-        }));
-      })();
-      
-      true;
-    `;
-    };
+    // ── Navigation ────────────────────────────────────────────────────────────
 
     const handleNavigationStateChange = useCallback(
       (navState) => {
+        clearTimeout(loadTimerRef.current);
+
         if (!navState.loading) {
-          if (loadingTimeoutRef.current) {
-            clearTimeout(loadingTimeoutRef.current);
-            loadingTimeoutRef.current = null;
-          }
+          setShowCfOverlay(false);
 
-          // Try to detect chain after page loads
-          if (ref?.current) {
-            setTimeout(() => {
-              ref.current.injectJavaScript(detectChainIdScript);
-            }, 1000);
-          }
+          // Record the loaded page into the cache store
+          PageCache.record(navState.url, navState.title || "");
+
+          if (ref?.current)
+            setTimeout(
+              () => ref.current?.injectJavaScript(DETECT_CHAIN_SCRIPT),
+              1_000,
+            );
         } else {
-          if (loadingTimeoutRef.current) {
-            clearTimeout(loadingTimeoutRef.current);
-          }
-
-          loadingTimeoutRef.current = setTimeout(() => {
-            console.warn("[WebView] Loading timeout detected");
-            if (ref?.current && navState.url === lastUrlRef.current) {
-              console.log("[WebView] Reloading stuck page");
+          loadTimerRef.current = setTimeout(() => {
+            if (ref?.current && navState.url === lastUrlRef.current)
               ref.current.reload();
-            }
-          }, 15000);
+          }, LOAD_TIMEOUT_MS);
         }
 
-        // Track current domain for connection persistence
         currentDomainRef.current = getDomain(navState.url);
         lastUrlRef.current = navState.url;
         onNavigationStateChange?.(navState);
@@ -512,119 +729,138 @@ const BrowserWebView = forwardRef(
       [onNavigationStateChange, ref],
     );
 
+    // ── URL interception ──────────────────────────────────────────────────────
+
+    const handleShouldStartLoad = useCallback(
+      ({ url }) => {
+        if (MM_SCHEMES.test(url)) {
+          const parsed = parseMetaMaskDeepLink(url);
+          setDeepLinkRequest(
+            parsed ?? {
+              channelId: null,
+              pubkey: null,
+              comm: null,
+              v: null,
+              originatorInfo: { title: getDomain(currentUrl), url: currentUrl },
+            },
+          );
+          return false;
+        }
+        return true;
+      },
+      [currentUrl],
+    );
+
+    // ── Messages ──────────────────────────────────────────────────────────────
+
     const handleMessage = useCallback(
       (event) => {
         try {
           const data = JSON.parse(event.nativeEvent.data);
+          switch (data.type) {
+            // Update the cache entry with the real page title (SPAs resolve late)
+            case "PAGE_TITLE":
+              if (lastUrlRef.current && data.title) {
+                PageCache.record(lastUrlRef.current, data.title);
+                onPageCached?.({
+                  url: lastUrlRef.current,
+                  title: data.title,
+                  domain: currentDomainRef.current,
+                });
+              }
+              break;
 
-          if (data.type === "WEB3_READY") {
-            console.log("[WebView] Web3 provider ready");
-          } else if (
-            data.type === "CHAIN_DETECTED" ||
-            data.type === "CHAIN_REQUESTED"
-          ) {
-            console.log("[WebView] Chain detected:", data.chainId);
-            detectedChainIdRef.current = data.chainId;
+            case "CLOUDFLARE_CHALLENGE":
+              setShowCfOverlay(true);
+              break;
+            case "CLOUDFLARE_PASSED":
+              setShowCfOverlay(false);
+              break;
 
-            // Convert hex to decimal
-            const chainId = parseInt(data.chainId, 16);
-
-            // Notify parent about chain mismatch
-            if (chainId !== activeChain?.id && onChainMismatchDetected) {
-              onChainMismatchDetected(chainId, data.chainId);
+            case "CHAIN_DETECTED":
+            case "CHAIN_REQUESTED": {
+              detectedChainIdRef.current = data.chainId;
+              const dec = parseInt(data.chainId, 16);
+              if (dec !== activeChain?.id)
+                onChainMismatchDetected?.(dec, data.chainId);
+              break;
             }
-          } else if (data.type === "WEB3_REQUEST" && data.requestedChainId) {
-            // Store requested chain from the request
-            detectedChainIdRef.current = data.requestedChainId;
+            case "WEB3_REQUEST":
+              if (data.requestedChainId)
+                detectedChainIdRef.current = data.requestedChainId;
+              break;
           }
-
-          onMessage?.(event);
-        } catch (error) {
-          console.error("[WebView] Message parse error:", error);
-          onMessage?.(event);
-        }
+        } catch {}
+        onMessage?.(event);
       },
-      [onMessage, activeChain, onChainMismatchDetected],
+      [onMessage, activeChain?.id, onChainMismatchDetected, onPageCached],
     );
 
-    // Expose method to clear connection for current domain
-    useEffect(() => {
-      if (ref?.current) {
-        ref.current.clearDappConnection = () => {
-          if (currentDomainRef.current) {
-            removeConnection(currentDomainRef.current);
-          }
-        };
-
-        ref.current.getDetectedChainId = () => {
-          return detectedChainIdRef.current;
-        };
-      }
-    }, [ref]);
-
-    const styles = createStyles(COLORS);
+    // ── Render ────────────────────────────────────────────────────────────────
 
     return (
       <View style={styles.container}>
         <WebView
           ref={ref}
           source={{ uri: currentUrl }}
-          style={styles.webView}
-          onNavigationStateChange={handleNavigationStateChange}
+          style={[styles.webView, { backgroundColor: COLORS.background }]}
+          injectedJavaScriptBeforeContentLoaded={buildInjectionScript(
+            wallet?.address,
+            activeChain?.id,
+            isConnected,
+          )}
           onMessage={handleMessage}
-          injectedJavaScriptBeforeContentLoaded={getWeb3InjectionScript()}
-          startInLoadingState={true}
-          javaScriptEnabled={true}
-          domStorageEnabled={true}
-          allowsInlineMediaPlayback={true}
+          onNavigationStateChange={handleNavigationStateChange}
+          onShouldStartLoadWithRequest={handleShouldStartLoad}
+          // ── Smart cache mode (resolved per URL above) ────────────────────
+          // LOAD_DEFAULT             first visit / stale (>24 h)
+          // LOAD_CACHE_ELSE_NETWORK  revisit within 24 h  — disk first, network fallback
+          // LOAD_CACHE_ONLY          back / forward tap   — purely from disk, zero network
+          cacheEnabled
+          cacheMode={cacheMode}
+          javaScriptEnabled
+          domStorageEnabled
+          allowsInlineMediaPlayback
           mediaPlaybackRequiresUserAction={false}
-          allowFileAccess={true}
-          allowUniversalAccessFromFileURLs={true}
+          allowFileAccess
+          allowUniversalAccessFromFileURLs
           mixedContentMode="always"
-          thirdPartyCookiesEnabled={true}
-          sharedCookiesEnabled={true}
-          cacheEnabled={true}
-          cacheMode="LOAD_DEFAULT"
+          thirdPartyCookiesEnabled
+          sharedCookiesEnabled
           incognito={false}
-          userAgent="Mozilla/5.0 (Linux; Android 10) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36"
-          onError={(syntheticEvent) => {
-            const { nativeEvent } = syntheticEvent;
-            console.error("[WebView] Error:", nativeEvent);
-          }}
-          onHttpError={(syntheticEvent) => {
-            const { nativeEvent } = syntheticEvent;
-            console.error("[WebView] HTTP Error:", nativeEvent.statusCode);
+          startInLoadingState
+          renderLoading={() => null}
+          userAgent={BROWSER_UA}
+          onError={({ nativeEvent }) =>
+            __DEV__ && console.warn("[WebView]", nativeEvent)
+          }
+          onHttpError={({ nativeEvent }) => {
+            if (__DEV__)
+              console.warn("[WebView] HTTP:", nativeEvent.statusCode);
+            if ([403, 429, 503].includes(nativeEvent.statusCode))
+              setShowCfOverlay(true);
           }}
           onLoadProgress={({ nativeEvent }) => {
-            console.log("[WebView] Load progress:", nativeEvent.progress);
+            if (nativeEvent.progress >= 1) setShowCfOverlay(false);
           }}
-          renderLoading={() => null}
-          onShouldStartLoadWithRequest={(request) => {
-            if (
-              request.url.includes("metamask.app.link") ||
-              request.url.includes("metamask://") ||
-              request.url.startsWith("dapp://")
-            ) {
-              console.log("[WebView] Blocked MetaMask redirect:", request.url);
-              return false;
-            }
-            return true;
-          }}
+        />
+
+        <CloudflareOverlay visible={showCfOverlay} COLORS={COLORS} />
+
+        <DeepLinkModal
+          request={deepLinkRequest}
+          onApprove={handleDeepLinkApprove}
+          onReject={handleDeepLinkReject}
+          COLORS={COLORS}
         />
       </View>
     );
   },
 );
 
-const createStyles = (COLORS) =>
-  StyleSheet.create({
-    container: {
-      flex: 1,
-    },
-    webView: {
-      flex: 1,
-      backgroundColor: COLORS.background,
-    },
-  });
+const styles = StyleSheet.create({
+  container: { flex: 1 },
+  webView: { flex: 1 },
+});
 
 export default BrowserWebView;

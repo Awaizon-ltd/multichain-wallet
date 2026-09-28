@@ -1,0 +1,650 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Banner Admin — Awarizon Wallet</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@500;600&display=swap" rel="stylesheet" />
+<style>
+  :root {
+    --bg: #ffffff;
+    --surface: #f7f7f7;
+    --card: #ffffff;
+    --card-border: #e6e6e6;
+    --text: #0a0a0a;
+    --text-secondary: #3f3f3f;
+    --text-tertiary: #767676;
+    --accent: #99b60a;
+    --accent-ink: #0a0a0a; /* text color that sits on top of the accent */
+    --danger: #c62828;
+    --danger-bg: #fdecea;
+    --success: #2e7d32;
+    --radius-lg: 16px;
+    --radius-md: 10px;
+    --radius-sm: 6px;
+    --shadow: 0 1px 2px rgba(0,0,0,0.04), 0 8px 24px rgba(0,0,0,0.06);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #121212;
+      --surface: #1a1a1a;
+      --card: #1e1e1e;
+      --card-border: #2c2c2c;
+      --text: #f5f5f5;
+      --text-secondary: #c2c2c2;
+      --text-tertiary: #8a8a8a;
+      --danger-bg: #3a1414;
+      --shadow: 0 1px 2px rgba(0,0,0,0.3), 0 8px 24px rgba(0,0,0,0.4);
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #121212;
+    --surface: #1a1a1a;
+    --card: #1e1e1e;
+    --card-border: #2c2c2c;
+    --text: #f5f5f5;
+    --text-secondary: #c2c2c2;
+    --text-tertiary: #8a8a8a;
+    --danger-bg: #3a1414;
+    --shadow: 0 1px 2px rgba(0,0,0,0.3), 0 8px 24px rgba(0,0,0,0.4);
+  }
+
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font-family: "Inter", system-ui, -apple-system, sans-serif;
+    padding-inline: 20px;
+    padding-block: 28px 60px;
+  }
+  .mono { font-family: "JetBrains Mono", ui-monospace, monospace; }
+
+  .wrap { max-width: 900px; margin: 0 auto; }
+
+  /* ── Header ── */
+  header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 16px;
+    flex-wrap: wrap;
+    margin-bottom: 22px;
+  }
+  .brand { display: flex; align-items: center; gap: 12px; }
+  .brand-mark {
+    width: 38px; height: 38px; border-radius: 10px;
+    background: var(--accent);
+    display: flex; align-items: center; justify-content: center;
+    font-weight: 800; font-size: 16px; color: var(--accent-ink);
+    flex-shrink: 0;
+  }
+  h1 { font-size: 19px; font-weight: 800; margin: 0; letter-spacing: -0.2px; }
+  .subtitle { font-size: 12.5px; color: var(--text-tertiary); margin-top: 2px; }
+
+  /* ── Connection bar ── */
+  .conn-bar {
+    display: flex; align-items: center; gap: 8px;
+    background: var(--surface);
+    border: 1px solid var(--card-border);
+    border-radius: var(--radius-md);
+    padding: 8px 10px;
+  }
+  .conn-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--text-tertiary); flex-shrink: 0; transition: background .2s; }
+  .conn-dot.ok { background: var(--success); }
+  .conn-dot.bad { background: var(--danger); }
+  #backendUrl {
+    border: none; background: transparent; color: var(--text);
+    font-family: "JetBrains Mono", monospace; font-size: 12.5px;
+    width: 210px; outline: none;
+  }
+  .conn-bar button {
+    border: none; background: var(--card-border); color: var(--text);
+    font-size: 11.5px; font-weight: 600; padding: 6px 10px;
+    border-radius: var(--radius-sm); cursor: pointer;
+  }
+  .conn-bar button:hover { filter: brightness(0.95); }
+  @media (prefers-color-scheme: dark) { .conn-bar button:hover { filter: brightness(1.2); } }
+
+  /* ── Banner note ── */
+  .note {
+    font-size: 12.5px; color: var(--text-secondary);
+    background: var(--surface); border: 1px solid var(--card-border);
+    border-radius: var(--radius-md); padding: 10px 12px; margin-bottom: 20px;
+    line-height: 1.5;
+  }
+  .note b { color: var(--text); }
+
+  /* ── Toolbar ── */
+  .toolbar {
+    display: flex; align-items: center; justify-content: space-between;
+    margin-bottom: 14px; gap: 10px; flex-wrap: wrap;
+  }
+  .slot-count { font-size: 12.5px; color: var(--text-tertiary); }
+  .slot-count b { color: var(--text); }
+  .btn-primary {
+    background: var(--accent); color: var(--accent-ink);
+    border: none; border-radius: var(--radius-md);
+    font-weight: 700; font-size: 13.5px; padding: 10px 16px;
+    cursor: pointer; display: inline-flex; align-items: center; gap: 6px;
+  }
+  .btn-primary:disabled { opacity: 0.45; cursor: not-allowed; }
+  .btn-primary:not(:disabled):hover { filter: brightness(0.96); }
+
+  /* ── Banner list ── */
+  #list { display: flex; flex-direction: column; gap: 10px; }
+  .banner-row {
+    display: flex; align-items: center; gap: 12px;
+    background: var(--card); border: 1px solid var(--card-border);
+    border-radius: var(--radius-lg); padding: 12px;
+    box-shadow: var(--shadow);
+  }
+  .banner-row.inactive { opacity: 0.55; }
+  .thumb {
+    width: 56px; height: 56px; border-radius: var(--radius-md);
+    object-fit: cover; background: var(--surface); flex-shrink: 0;
+    border: 1px solid var(--card-border);
+  }
+  .row-info { flex: 1; min-width: 0; }
+  .row-title-line { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+  .row-title { font-weight: 700; font-size: 14.5px; }
+  .badge-chip {
+    font-size: 9px; font-weight: 800; letter-spacing: 0.4px;
+    color: var(--accent-ink); background: var(--accent);
+    padding: 2px 6px; border-radius: 5px; text-transform: uppercase;
+  }
+  .row-desc { font-size: 12.5px; color: var(--text-secondary); margin-top: 2px;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .row-meta { font-size: 11px; color: var(--text-tertiary); margin-top: 4px; display: flex; gap: 10px; }
+  .row-actions { display: flex; align-items: center; gap: 6px; flex-shrink: 0; }
+  .icon-btn {
+    width: 32px; height: 32px; border-radius: var(--radius-sm);
+    border: 1px solid var(--card-border); background: var(--surface);
+    color: var(--text-secondary); cursor: pointer;
+    display: flex; align-items: center; justify-content: center; font-size: 14px;
+  }
+  .icon-btn:hover { color: var(--text); }
+  .icon-btn.danger { color: var(--danger); }
+  .icon-btn.confirm { background: var(--danger-bg); color: var(--danger); border-color: var(--danger); }
+
+  /* toggle switch */
+  .switch { position: relative; width: 34px; height: 20px; flex-shrink: 0; }
+  .switch input { display: none; }
+  .switch .track {
+    position: absolute; inset: 0; border-radius: 20px; background: var(--card-border);
+    cursor: pointer; transition: background .15s;
+  }
+  .switch .track::after {
+    content: ""; position: absolute; top: 2px; left: 2px;
+    width: 16px; height: 16px; border-radius: 50%; background: #fff;
+    transition: transform .15s; box-shadow: 0 1px 2px rgba(0,0,0,0.25);
+  }
+  .switch input:checked + .track { background: var(--accent); }
+  .switch input:checked + .track::after { transform: translateX(14px); }
+
+  .empty {
+    text-align: center; padding: 60px 20px; color: var(--text-tertiary);
+    border: 1px dashed var(--card-border); border-radius: var(--radius-lg);
+    font-size: 13.5px;
+  }
+  .loading { text-align: center; padding: 40px; color: var(--text-tertiary); font-size: 13px; }
+  .error-banner {
+    background: var(--danger-bg); color: var(--danger); border-radius: var(--radius-md);
+    padding: 10px 12px; font-size: 12.5px; margin-bottom: 14px; display: none;
+  }
+  .error-banner.show { display: block; }
+
+  /* ── Modal ── */
+  .modal-scrim {
+    position: fixed; inset: 0; background: rgba(0,0,0,0.5);
+    display: none; align-items: flex-start; justify-content: center;
+    padding: 40px 16px; overflow-y: auto; z-index: 10;
+  }
+  .modal-scrim.open { display: flex; }
+  .modal {
+    background: var(--card); border-radius: var(--radius-lg);
+    width: 100%; max-width: 480px; padding: 22px;
+    box-shadow: var(--shadow); border: 1px solid var(--card-border);
+  }
+  .modal h2 { font-size: 16.5px; margin: 0 0 4px; }
+  .modal .modal-sub { font-size: 12px; color: var(--text-tertiary); margin-bottom: 18px; }
+  .field { margin-bottom: 14px; }
+  .field label {
+    display: block; font-size: 11.5px; font-weight: 700; color: var(--text-secondary);
+    margin-bottom: 5px; text-transform: uppercase; letter-spacing: 0.4px;
+  }
+  .field .hint { font-size: 11px; color: var(--text-tertiary); margin-top: 4px; font-weight: 400; text-transform: none; letter-spacing: 0; }
+  .field input[type="text"], .field textarea, .field select {
+    width: 100%; background: var(--surface); border: 1px solid var(--card-border);
+    color: var(--text); border-radius: var(--radius-sm); padding: 9px 10px;
+    font-size: 13.5px; font-family: inherit; outline: none;
+  }
+  .field input[type="text"]:focus, .field textarea:focus, .field select:focus { border-color: var(--accent); }
+  .field textarea { resize: vertical; min-height: 60px; }
+  .row-2 { display: flex; gap: 10px; }
+  .row-2 .field { flex: 1; }
+
+  .image-picker {
+    display: flex; align-items: center; gap: 12px;
+  }
+  .image-preview {
+    width: 64px; height: 64px; border-radius: var(--radius-md);
+    object-fit: cover; background: var(--surface); border: 1px solid var(--card-border);
+    flex-shrink: 0;
+  }
+  .image-picker-btn {
+    border: 1px dashed var(--card-border); background: var(--surface);
+    border-radius: var(--radius-sm); padding: 8px 12px; font-size: 12.5px;
+    color: var(--text-secondary); cursor: pointer; font-weight: 600;
+  }
+
+  .switch-row { display: flex; align-items: center; gap: 10px; }
+  .switch-row span { font-size: 13px; color: var(--text); }
+
+  .modal-actions {
+    display: flex; justify-content: flex-end; gap: 8px; margin-top: 20px;
+  }
+  .btn-secondary {
+    background: var(--surface); color: var(--text); border: 1px solid var(--card-border);
+    border-radius: var(--radius-md); font-weight: 600; font-size: 13px;
+    padding: 9px 14px; cursor: pointer;
+  }
+  .modal-error {
+    background: var(--danger-bg); color: var(--danger); border-radius: var(--radius-sm);
+    padding: 8px 10px; font-size: 12px; margin-bottom: 12px; display: none;
+  }
+  .modal-error.show { display: block; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header>
+    <div class="brand">
+      <div class="brand-mark">A</div>
+      <div>
+        <h1>Banner Admin</h1>
+        <div class="subtitle">Home screen promotional content</div>
+      </div>
+    </div>
+    <div class="conn-bar">
+      <div class="conn-dot" id="connDot"></div>
+      <input id="backendUrl" type="text" value="http://localhost:3000" spellcheck="false" />
+      <button id="connectBtn">Connect</button>
+    </div>
+  </header>
+
+  <div class="note">
+    <b>How this works:</b> this page talks directly to your crypto-backend's
+    <span class="mono">/api/banners</span> endpoints — nothing is stored here.
+    Point "Connect" at wherever the backend is running (e.g.
+    <span class="mono">http://localhost:3000</span> on this machine, or your
+    LAN IP if the backend runs elsewhere). Up to 5 banners can be active at
+    once, shown in Order 1–5 at the top of Home. Each card is a
+    <b>title</b>, an optional <b>description</b>, and a square image shown at
+    64×64px — a square photo of any larger size works fine.
+  </div>
+
+  <div class="error-banner" id="loadError"></div>
+
+  <div class="toolbar">
+    <div class="slot-count"><b id="slotUsed">–</b> of 5 slots used</div>
+    <button class="btn-primary" id="newBtn" disabled>+ New Banner</button>
+  </div>
+
+  <div id="list"></div>
+
+  <!-- ── Modal ── -->
+  <div class="modal-scrim" id="modalScrim">
+    <div class="modal">
+      <h2 id="modalTitle">New Banner</h2>
+      <div class="modal-sub">Shown on the Home screen while active.</div>
+      <div class="modal-error" id="modalError"></div>
+
+      <div class="field">
+        <label for="fTitle">Title</label>
+        <input type="text" id="fTitle" maxlength="100" placeholder="e.g. Bridge to Arc is live" />
+      </div>
+      <div class="field">
+        <label for="fDescription">Description</label>
+        <textarea id="fDescription" maxlength="2000" placeholder="One or two short sentences — shown truncated on Home."></textarea>
+      </div>
+      <div class="row-2">
+        <div class="field">
+          <label for="fBadge">Badge <span class="hint" style="display:inline">(optional)</span></label>
+          <input type="text" id="fBadge" maxlength="20" placeholder="NEW" />
+        </div>
+        <div class="field">
+          <label for="fOrder">Order slot</label>
+          <select id="fOrder"></select>
+        </div>
+      </div>
+      <div class="row-2">
+        <div class="field">
+          <label for="fCtaLabel">Button label</label>
+          <input type="text" id="fCtaLabel" maxlength="30" placeholder="Learn More" />
+        </div>
+        <div class="field">
+          <label for="fCtaUrl">Button link <span class="hint" style="display:inline">(optional)</span></label>
+          <input type="text" id="fCtaUrl" placeholder="https://…" />
+        </div>
+      </div>
+
+      <div class="field">
+        <label>Square image</label>
+        <div class="image-picker">
+          <img class="image-preview" id="imgPreview" src="" hidden />
+          <div class="image-preview" id="imgPreviewEmpty" style="display:flex;align-items:center;justify-content:center;font-size:10px;color:var(--text-tertiary);text-align:center;">no image</div>
+          <button type="button" class="image-picker-btn" id="pickImageBtn">Choose image…</button>
+          <input type="file" id="fImage" accept="image/png,image/jpeg,image/webp,image/gif" hidden />
+        </div>
+        <div class="hint" style="margin-top:6px;">Square photos look best — this will display at 64×64px in the app.</div>
+      </div>
+
+      <div class="field switch-row">
+        <label class="switch"><input type="checkbox" id="fActive" checked /><span class="track"></span></label>
+        <span>Active (visible on Home)</span>
+      </div>
+
+      <div class="modal-actions">
+        <button class="btn-secondary" id="cancelBtn">Cancel</button>
+        <button class="btn-primary" id="saveBtn">Save Banner</button>
+      </div>
+    </div>
+  </div>
+
+</div>
+
+<script>
+(function () {
+  const $ = (id) => document.getElementById(id);
+  const STORAGE_KEY = "banner_admin_backend_url";
+
+  let banners = [];
+  let editingId = null;
+  let selectedImageFile = null;
+  let pendingDeleteId = null;
+
+  // ── Backend URL persistence (per-viewer convenience only) ──────────────────
+  try {
+    const saved = localStorage.getItem(STORAGE_KEY);
+    if (saved) $("backendUrl").value = saved;
+  } catch {}
+
+  const baseUrl = () => $("backendUrl").value.trim().replace(/\/+$/, "");
+
+  function setConnState(state) {
+    const dot = $("connDot");
+    dot.className = "conn-dot" + (state === "ok" ? " ok" : state === "bad" ? " bad" : "");
+  }
+
+  function showLoadError(msg) {
+    const el = $("loadError");
+    if (!msg) { el.classList.remove("show"); el.textContent = ""; return; }
+    el.textContent = msg;
+    el.classList.add("show");
+  }
+
+  async function api(path, opts = {}) {
+    const res = await fetch(`${baseUrl()}/api${path}`, opts);
+    let json;
+    try { json = await res.json(); }
+    catch { throw new Error(`Server returned an unexpected response (HTTP ${res.status}).`); }
+    if (!res.ok || json.success === false) {
+      throw new Error(json.message || `Request failed (HTTP ${res.status})`);
+    }
+    return json;
+  }
+
+  // ── Load + render ────────────────────────────────────────────────────────────
+  async function loadBanners() {
+    $("list").innerHTML = '<div class="loading">Loading banners…</div>';
+    $("newBtn").disabled = true;
+    try {
+      const json = await api("/banners?includeInactive=true");
+      banners = json.data || [];
+      setConnState("ok");
+      showLoadError(null);
+      $("newBtn").disabled = banners.length >= 5;
+      render();
+    } catch (err) {
+      setConnState("bad");
+      banners = [];
+      $("list").innerHTML = "";
+      showLoadError(
+        `Couldn't reach the backend at ${baseUrl()} — ${err.message}. ` +
+        `Check the URL and that the server is running.`,
+      );
+    }
+  }
+
+  function imageSrc(b) {
+    if (!b.imageUrl) return `${baseUrl()}/api/banners/image/${b._id}`;
+    // imageUrl already includes "/api/..."
+    return `${baseUrl()}${b.imageUrl}`;
+  }
+
+  function render() {
+    $("slotUsed").textContent = banners.length;
+    const list = $("list");
+    if (banners.length === 0) {
+      list.innerHTML = '<div class="empty">No banners yet — create one to show it on the Home screen.</div>';
+      return;
+    }
+    const sorted = [...banners].sort((a, b) => a.order - b.order);
+    list.innerHTML = "";
+    for (const b of sorted) {
+      const row = document.createElement("div");
+      row.className = "banner-row" + (b.active ? "" : " inactive");
+      row.innerHTML = `
+        <img class="thumb" src="${imageSrc(b)}" alt="" onerror="this.style.visibility='hidden'" />
+        <div class="row-info">
+          <div class="row-title-line">
+            <span class="row-title"></span>
+            ${b.badge ? `<span class="badge-chip"></span>` : ""}
+          </div>
+          <div class="row-desc"></div>
+          <div class="row-meta"><span>Order ${b.order}</span><span>${b.active ? "Active" : "Hidden"}</span></div>
+        </div>
+        <label class="switch"><input type="checkbox" ${b.active ? "checked" : ""} data-toggle="${b._id}" /><span class="track"></span></label>
+        <div class="row-actions">
+          <button class="icon-btn" data-edit="${b._id}" title="Edit">✎</button>
+          <button class="icon-btn danger" data-delete="${b._id}" title="Delete">🗑</button>
+        </div>
+      `;
+      row.querySelector(".row-title").textContent = b.title;
+      if (b.badge) row.querySelector(".badge-chip").textContent = b.badge;
+      row.querySelector(".row-desc").textContent = b.description || "No description";
+      list.appendChild(row);
+    }
+
+    list.querySelectorAll("[data-toggle]").forEach((el) => {
+      el.addEventListener("change", () => toggleActive(el.dataset.toggle));
+    });
+    list.querySelectorAll("[data-edit]").forEach((el) => {
+      el.addEventListener("click", () => openModal(el.dataset.edit));
+    });
+    list.querySelectorAll("[data-delete]").forEach((el) => {
+      el.addEventListener("click", () => handleDeleteClick(el));
+    });
+  }
+
+  async function toggleActive(id) {
+    try {
+      await api(`/banners/${id}/toggle`, { method: "PATCH" });
+      await loadBanners();
+    } catch (err) {
+      showLoadError(err.message);
+    }
+  }
+
+  function handleDeleteClick(btn) {
+    const id = btn.dataset.delete;
+    if (pendingDeleteId !== id) {
+      // First click: arm confirmation on this button only
+      document.querySelectorAll(".icon-btn.confirm").forEach((b) => {
+        b.classList.remove("confirm"); b.textContent = "🗑";
+      });
+      pendingDeleteId = id;
+      btn.classList.add("confirm");
+      btn.textContent = "Confirm?";
+      setTimeout(() => {
+        if (pendingDeleteId === id) {
+          btn.classList.remove("confirm");
+          btn.textContent = "🗑";
+          pendingDeleteId = null;
+        }
+      }, 3000);
+      return;
+    }
+    pendingDeleteId = null;
+    deleteBanner(id);
+  }
+
+  async function deleteBanner(id) {
+    try {
+      await api(`/banners/${id}`, { method: "DELETE" });
+      await loadBanners();
+    } catch (err) {
+      showLoadError(err.message);
+    }
+  }
+
+  // ── Modal ────────────────────────────────────────────────────────────────────
+  function usedOrders(excludeId) {
+    return banners.filter((b) => b._id !== excludeId).map((b) => b.order);
+  }
+
+  function populateOrderSelect(excludeId, currentOrder) {
+    const used = usedOrders(excludeId);
+    const sel = $("fOrder");
+    sel.innerHTML = "";
+    for (let i = 1; i <= 5; i++) {
+      const taken = used.includes(i);
+      const opt = document.createElement("option");
+      opt.value = i;
+      opt.textContent = taken ? `${i} (in use)` : `${i}`;
+      if (taken && i !== currentOrder) opt.disabled = true;
+      sel.appendChild(opt);
+    }
+    sel.value = currentOrder || [1, 2, 3, 4, 5].find((i) => !used.includes(i)) || 1;
+  }
+
+  function resetModalError() {
+    $("modalError").classList.remove("show");
+    $("modalError").textContent = "";
+  }
+
+  function openModal(id) {
+    editingId = id || null;
+    selectedImageFile = null;
+    resetModalError();
+    const b = id ? banners.find((x) => x._id === id) : null;
+
+    $("modalTitle").textContent = b ? "Edit Banner" : "New Banner";
+    $("fTitle").value = b?.title || "";
+    $("fDescription").value = b?.description || "";
+    $("fBadge").value = b?.badge || "";
+    $("fCtaLabel").value = b?.ctaLabel || "Learn More";
+    $("fCtaUrl").value = b?.ctaUrl || "";
+    $("fActive").checked = b ? b.active : true;
+    populateOrderSelect(id, b?.order);
+
+    if (b) {
+      $("imgPreview").src = imageSrc(b);
+      $("imgPreview").hidden = false;
+      $("imgPreviewEmpty").style.display = "none";
+    } else {
+      $("imgPreview").hidden = true;
+      $("imgPreviewEmpty").style.display = "flex";
+    }
+
+    $("modalScrim").classList.add("open");
+  }
+
+  function closeModal() {
+    $("modalScrim").classList.remove("open");
+    editingId = null;
+    selectedImageFile = null;
+  }
+
+  $("pickImageBtn").addEventListener("click", () => $("fImage").click());
+  $("fImage").addEventListener("change", () => {
+    const file = $("fImage").files[0];
+    if (!file) return;
+    selectedImageFile = file;
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      $("imgPreview").src = e.target.result;
+      $("imgPreview").hidden = false;
+      $("imgPreviewEmpty").style.display = "none";
+    };
+    reader.readAsDataURL(file);
+  });
+
+  $("cancelBtn").addEventListener("click", closeModal);
+  $("modalScrim").addEventListener("click", (e) => {
+    if (e.target === $("modalScrim")) closeModal();
+  });
+
+  $("newBtn").addEventListener("click", () => openModal(null));
+
+  $("saveBtn").addEventListener("click", async () => {
+    resetModalError();
+    const title = $("fTitle").value.trim();
+    if (!title) {
+      $("modalError").textContent = "Title is required.";
+      $("modalError").classList.add("show");
+      return;
+    }
+    if (!editingId && !selectedImageFile) {
+      $("modalError").textContent = "An image is required for a new banner.";
+      $("modalError").classList.add("show");
+      return;
+    }
+
+    const fd = new FormData();
+    fd.append("title", title);
+    fd.append("description", $("fDescription").value.trim());
+    fd.append("badge", $("fBadge").value.trim());
+    fd.append("ctaLabel", $("fCtaLabel").value.trim() || "Learn More");
+    fd.append("ctaUrl", $("fCtaUrl").value.trim());
+    fd.append("order", $("fOrder").value);
+    fd.append("active", $("fActive").checked ? "true" : "false");
+    if (selectedImageFile) fd.append("image", selectedImageFile);
+
+    $("saveBtn").disabled = true;
+    $("saveBtn").textContent = "Saving…";
+    try {
+      if (editingId) {
+        await api(`/banners/${editingId}`, { method: "PUT", body: fd });
+      } else {
+        await api("/banners", { method: "POST", body: fd });
+      }
+      closeModal();
+      await loadBanners();
+    } catch (err) {
+      $("modalError").textContent = err.message;
+      $("modalError").classList.add("show");
+    } finally {
+      $("saveBtn").disabled = false;
+      $("saveBtn").textContent = "Save Banner";
+    }
+  });
+
+  // ── Connect ──────────────────────────────────────────────────────────────────
+  $("connectBtn").addEventListener("click", () => {
+    try { localStorage.setItem(STORAGE_KEY, $("backendUrl").value.trim()); } catch {}
+    loadBanners();
+  });
+  $("backendUrl").addEventListener("keydown", (e) => {
+    if (e.key === "Enter") $("connectBtn").click();
+  });
+
+  loadBanners();
+})();
+</script>
+</body>
+</html>

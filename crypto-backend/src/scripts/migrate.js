@@ -38,6 +38,14 @@ const MIGRATIONS = [
     verifyTables: ["swap_transactions"],
     verifyViews: ["swap_leaderboard"],
   },
+  {
+    id: 3,
+    label: "Banners (moved from MongoDB)",
+    up: "003_banners.sql",
+    down: "003_banners.rollback.sql",
+    verifyTables: ["banners"],
+    verifyViews: [],
+  },
 ];
 
 // ── CLI args ──────────────────────────────────────────────────────────────

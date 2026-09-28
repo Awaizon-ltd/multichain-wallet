@@ -1,123 +1,31 @@
-// utils/nftCache.js
+// utils/blockchain/NftsCache.js
+//
+// Thin shim over the real cache layer (utils/cache/DataCache.js) so every
+// NFTs.js call site keeps its existing withCache(key, fetcher) signature —
+// this used to be its own in-memory-only cache (lost on every app restart,
+// meaning a full re-scan across every Alchemy-supported chain on every cold
+// launch). It now gets SQLite persistence and request dedup for free.
+
+import { withCache as cachedFetch } from "../cache/DataCache";
+import cacheStore from "../cache/CacheStore";
+
+const DEFAULT_TTL = 5 * 60 * 1000; // matches the old NFTCache's 5-minute TTL
 
 /**
- * Simple in-memory cache with TTL support
- * Reduces API calls by caching responses for 5 minutes
+ * @param {string}   cacheKey
+ * @param {function} fetchFunction  async () => value
  */
-class NFTCache {
-  constructor(ttlMinutes = 10) {
-    this.cache = new Map();
-    this.ttl = ttlMinutes * 60 * 1000; // Convert to milliseconds
-  }
+export const withCache = async (cacheKey, fetchFunction) =>
+  cachedFetch(`nft:${cacheKey}`, DEFAULT_TTL, fetchFunction, { persist: true });
 
-  /**
-   * Generate cache key from function name and arguments
-   */
-  generateKey(functionName, ...args) {
-    return `${functionName}:${JSON.stringify(args)}`;
-  }
-
-  /**
-   * Get cached value if still valid
-   */
-  get(key) {
-    const cached = this.cache.get(key);
-
-    if (!cached) {
-      return null;
-    }
-
-    const now = Date.now();
-    if (now - cached.timestamp > this.ttl) {
-      // Cache expired
-      this.cache.delete(key);
-      return null;
-    }
-
-    console.log(`[NFTCache] Cache HIT for ${key}`);
-    return cached.data;
-  }
-
-  /**
-   * Set cache value with current timestamp
-   */
-  set(key, data) {
-    console.log(`[NFTCache] Cache SET for ${key}`);
-    this.cache.set(key, {
-      data,
-      timestamp: Date.now(),
-    });
-  }
-
-  /**
-   * Clear all cache
-   */
-  clear() {
-    console.log("[NFTCache] Clearing all cache");
-    this.cache.clear();
-  }
-
-  /**
-   * Clear expired entries
-   */
-  clearExpired() {
-    const now = Date.now();
-    let cleared = 0;
-
-    for (const [key, value] of this.cache.entries()) {
-      if (now - value.timestamp > this.ttl) {
-        this.cache.delete(key);
-        cleared++;
-      }
-    }
-
-    if (cleared > 0) {
-      console.log(`[NFTCache] Cleared ${cleared} expired entries`);
-    }
-  }
-
-  /**
-   * Get cache statistics
-   */
-  getStats() {
-    const now = Date.now();
-    const entries = Array.from(this.cache.values());
-    const expired = entries.filter((e) => now - e.timestamp > this.ttl).length;
-
-    return {
-      total: this.cache.size,
-      active: this.cache.size - expired,
-      expired,
-    };
-  }
-}
-
-// Create singleton instance with 5-minute TTL
-const nftCache = new NFTCache(5);
-
-// Clear expired entries every minute
-setInterval(() => {
-  nftCache.clearExpired();
-}, 60 * 1000);
-
-/**
- * Wrapper function to cache any async function call
- */
-export const withCache = async (cacheKey, fetchFunction) => {
-  // Try to get from cache first
-  const cached = nftCache.get(cacheKey);
-  if (cached !== null) {
-    return cached;
-  }
-
-  // Cache miss - fetch fresh data
-  console.log(`[NFTCache] Cache MISS for ${cacheKey}`);
-  const data = await fetchFunction();
-
-  // Store in cache
-  nftCache.set(cacheKey, data);
-
-  return data;
+// Legacy singleton API some call sites may still reference — backed by the
+// same store now instead of a private, unpersisted Map.
+export const nftCache = {
+  generateKey: (method, ...args) =>
+    `${method}:${args.map((a) => (typeof a === "object" ? JSON.stringify(a ?? null) : String(a))).join(":")}`,
+  // withCache() namespaces keys under "nft:", so deletes must too
+  cache: { delete: (key) => cacheStore.invalidate(`nft:${key}`) },
+  clear: () => cacheStore.invalidateByPrefix("nft:"),
+  clearExpired: () => {}, // handled automatically by CacheStore's background prune
+  getStats: () => ({ backend: "sqlite (shared cache store)" }),
 };
-
-export { nftCache };

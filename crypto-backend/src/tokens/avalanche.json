@@ -70,5 +70,37 @@
     "symbol": "GUN",
     "decimals": 18,
     "logoURI": "https://assets.coingecko.com/coins/images/55027/standard/gunz.jpg?1743262298"
+  },
+  {
+    "chainId": 43114,
+    "address": "0xFdCa15bd55F350a36E63C47661914d80411d2C22",
+    "name": "Bittensor",
+    "symbol": "TAO",
+    "decimals": 18,
+    "logoURI": "https://coin-images.coingecko.com/coins/images/28452/large/ARUsPeNQ_400x400.jpeg?1696527447"
+  },
+  {
+    "chainId": 43114,
+    "address": "0x2775d5105276781B4b85bA6eA6a6653bEeD1dd32",
+    "name": "Tether Gold",
+    "symbol": "XAUt0",
+    "decimals": 6,
+    "logoURI": "https://coin-images.coingecko.com/coins/images/66560/large/XAUt0_Token_Icon_Gold.png?1749747942"
+  },
+  {
+    "chainId": 43114,
+    "address": "0x00000000eFE302BEAA2b3e6e1b18d08D69a9012a",
+    "name": "AUSD",
+    "symbol": "AUSD",
+    "decimals": 6,
+    "logoURI": "https://coin-images.coingecko.com/coins/images/39284/large/AUSD_1024px.png?1764684132"
+  },
+  {
+    "chainId": 43114,
+    "address": "0xb6314518b61b4864162c7aE7fdc36261e0A14C4b",
+    "name": "YOM",
+    "symbol": "YOM",
+    "decimals": 18,
+    "logoURI": "https://coin-images.coingecko.com/coins/images/102172602/large/YOM_TOKEN_LOGO_200x200.png?1774193038"
   }
 ]

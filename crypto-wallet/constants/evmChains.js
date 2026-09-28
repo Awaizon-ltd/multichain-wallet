@@ -68,17 +68,6 @@ export const EVM_CHAINS = {
     testnet: false,
   },
 
-  MANTLE: {
-    key: "MANTLE",
-    id: 5000,
-    name: "Mantle",
-    symbol: "MNT",
-    rpcUrl: alchemyRpc("mantle-mainnet"),
-    explorer: "https://mantlescan.xyz",
-    icon: "https://cryptologos.cc/logos/mantle-mnt-logo.png",
-    testnet: false,
-  },
-
   ZETACHAIN: {
     key: "ZETACHAIN",
     id: 7000,

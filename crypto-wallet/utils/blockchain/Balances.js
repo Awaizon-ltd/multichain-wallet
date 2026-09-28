@@ -1,53 +1,204 @@
 // utils/balances.js
 import { ethers } from "ethers";
 import { createProviderForChain, validateChain } from "./Providers";
-import { getAlchemyInstance } from "./Alchemy";
+import { withCache, Key, TTL } from "../cache/DataCache";
+import { batchGetTokenBalances } from "../cache/Multicall";
+
+// ─── Constants ────────────────────────────────────────────────────────────────
+
+// ERC-20 Transfer(address indexed from, address indexed to, uint256 value)
+const TRANSFER_TOPIC =
+  "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef";
+
+// Minimal ABI — defined once, reused everywhere
+const ERC20_ABI = [
+  "function balanceOf(address) view returns (uint256)",
+  "function symbol()   view returns (string)",
+  "function name()     view returns (string)",
+  "function decimals() view returns (uint8)",
+];
+
+// How many blocks back to scan for incoming Transfer logs when discovering tokens.
+// ~7 days on Ethereum (12 s/block). Adjust per chain if needed.
+const LOG_SCAN_BLOCKS = 50_000;
+
+// Hard cap on how many token contracts to resolve per discovery call.
+// Prevents runaway RPC usage on addresses with hundreds of dust tokens.
+const MAX_TOKENS_TO_RESOLVE = 20;
+
+// Known tokens for chains that don't emit standard ERC-20 Transfer logs
+// or where we want guaranteed coverage regardless of history.
+// Add Arc (5042) / Robinhood Chain (4663) entries here once verified.
+const KNOWN_TOKENS = {};
+
+// ─── Helpers ──────────────────────────────────────────────────────────────────
 
 /**
- * Get native token balance
+ * Fetch ERC-20 metadata + balance for a list of contract addresses.
+ *
+ * Uses Multicall3 to batch ALL balanceOf calls into a SINGLE eth_call,
+ * then fetches metadata only for tokens with a non-zero balance.
+ *
+ * Old: N eth_calls (one balanceOf per token)
+ * New: 1 eth_call (all balanceOf via Multicall3) + M metadata calls (M ≤ N)
  */
-export const getNativeBalance = async (address, chain) => {
-  try {
-    validateChain(chain, "getNativeBalance");
+const resolveTokenBalances = async (
+  provider,
+  walletAddress,
+  contractAddresses,
+  chain,
+) => {
+  if (!contractAddresses.length) return [];
 
-    const provider = createProviderForChain(chain);
-    const balance = await provider.getBalance(address);
+  // Single Multicall3 eth_call → Map<addr → BigInt balance>
+  const balanceMap = await batchGetTokenBalances(walletAddress, contractAddresses, chain);
 
-    return {
-      wei: balance.toString(),
-      formatted: ethers.formatEther(balance),
-      symbol: chain.symbol,
-      decimals: 18,
-    };
-  } catch (error) {
-    console.error("[getNativeBalance] Error:", error);
-    throw error;
-  }
+  // Only fetch metadata for non-zero balances
+  const nonZero = contractAddresses.filter((addr) => {
+    const bal = balanceMap.get(addr.toLowerCase());
+    return bal !== undefined && bal > 0n;
+  });
+
+  if (!nonZero.length) return [];
+
+  const results = await Promise.all(
+    nonZero.map(async (addr) => {
+      try {
+        const contract = new ethers.Contract(addr, ERC20_ABI, provider);
+        const balance = balanceMap.get(addr.toLowerCase());
+
+        const [symbol, name, decimals] = await Promise.all([
+          contract.symbol().catch(() => "???"),
+          contract.name().catch(() => "Unknown Token"),
+          contract.decimals().catch(() => 18n),
+        ]);
+
+        const dec = Number(decimals);
+        return {
+          address: addr,
+          balance: balance.toString(),
+          formatted: ethers.formatUnits(balance, dec),
+          name,
+          symbol,
+          decimals: dec,
+          logo: null,
+        };
+      } catch {
+        return null;
+      }
+    }),
+  );
+
+  return results.filter(Boolean);
 };
 
 /**
- * Get native balances for multiple chains
+ * Discover ERC-20 tokens by scanning Transfer logs where `to` = walletAddress.
+ * This is the standard no-API approach used by MetaMask, Rainbow, etc.
+ *
+ * eth_getLogs is a single RPC call. We deduplicate contract addresses, cap at
+ * MAX_TOKENS_TO_RESOLVE, then resolve balances + metadata in parallel.
+ */
+const discoverTokensViaLogs = async (provider, walletAddress, chain) => {
+  let toBlock;
+  try {
+    toBlock = await provider.getBlockNumber();
+  } catch {
+    return [];
+  }
+
+  const fromBlock = Math.max(0, toBlock - LOG_SCAN_BLOCKS);
+  const paddedAddress = ethers.zeroPadValue(walletAddress, 32);
+
+  let logs;
+  try {
+    logs = await provider.getLogs({
+      fromBlock,
+      toBlock,
+      topics: [TRANSFER_TOPIC, null, paddedAddress], // Transfer(_,TO,_)
+    });
+  } catch {
+    // Node may not support eth_getLogs with a wide range — fall back to known tokens
+    __DEV__ &&
+      console.warn(
+        `[discoverTokensViaLogs] getLogs failed for ${chain.name}, using known tokens only`,
+      );
+    return [];
+  }
+
+  // Deduplicate contract addresses, ignore the native sentinel
+  const NATIVE_SENTINEL = "0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee";
+  const uniqueContracts = [
+    ...new Set(
+      logs
+        .map((l) => l.address.toLowerCase())
+        .filter((a) => a !== NATIVE_SENTINEL),
+    ),
+  ].slice(0, MAX_TOKENS_TO_RESOLVE);
+
+  return resolveTokenBalances(provider, walletAddress, uniqueContracts, chain);
+};
+
+/**
+ * Merge log-discovered tokens with any KNOWN_TOKENS for the chain,
+ * deduplicating by lowercase address.
+ */
+const getTokensWithKnownFallback = async (provider, walletAddress, chain) => {
+  const knownAddresses = (KNOWN_TOKENS[chain.id] ?? []).map((t) => t.address);
+
+  // Run log discovery and known-token resolution in parallel
+  const [discovered, knownResolved] = await Promise.all([
+    discoverTokensViaLogs(provider, walletAddress, chain),
+    resolveTokenBalances(provider, walletAddress, knownAddresses, chain),
+  ]);
+
+  // Merge: discovered takes precedence, known fills in gaps
+  const seen = new Set(discovered.map((t) => t.address.toLowerCase()));
+  const merged = [...discovered];
+
+  for (const token of knownResolved) {
+    if (!seen.has(token.address.toLowerCase())) {
+      merged.push(token);
+    }
+  }
+
+  return merged;
+};
+
+// ─── Public API ───────────────────────────────────────────────────────────────
+
+/**
+ * Native token balance for one chain.
+ * Cached 30s — force-invalidated after sends via invalidateBalance().
+ */
+export const getNativeBalance = async (address, chain) => {
+  validateChain(chain, "getNativeBalance");
+  return withCache(
+    Key.nativeBalance(address, chain.id),
+    TTL.NATIVE_BALANCE,
+    async () => {
+      const balance = await createProviderForChain(chain).getBalance(address);
+      return {
+        wei: balance.toString(),
+        formatted: ethers.formatEther(balance),
+        symbol: chain.symbol,
+        decimals: 18,
+      };
+    },
+  );
+};
+
+/**
+ * Native balances across multiple chains in parallel.
+ * Returns an object keyed by chainId. Failed chains return { formatted: "0", error }.
  */
 export const getNativeBalancesMultiChain = async (address, chains) => {
-  try {
-    console.log(
-      "[getNativeBalancesMultiChain] Fetching balances for:",
-      address,
-    );
-
-    const balancePromises = chains.map(async (chain) => {
+  const results = await Promise.all(
+    chains.map(async (chain) => {
       try {
         const balance = await getNativeBalance(address, chain);
-        return {
-          chainId: chain.id,
-          chainName: chain.name,
-          ...balance,
-        };
+        return { chainId: chain.id, chainName: chain.name, ...balance };
       } catch (error) {
-        console.error(
-          `[getNativeBalancesMultiChain] Error for ${chain.name}:`,
-          error,
-        );
         return {
           chainId: chain.id,
           chainName: chain.name,
@@ -58,336 +209,102 @@ export const getNativeBalancesMultiChain = async (address, chains) => {
           error: error.message,
         };
       }
-    });
+    }),
+  );
 
-    const balances = await Promise.all(balancePromises);
-
-    // Return as object keyed by chainId
-    return balances.reduce((acc, balance) => {
-      acc[balance.chainId] = balance;
-      return acc;
-    }, {});
-  } catch (error) {
-    console.error("[getNativeBalancesMultiChain] Error:", error);
-    throw error;
-  }
+  return results.reduce((acc, b) => {
+    acc[b.chainId] = b;
+    return acc;
+  }, {});
 };
 
 /**
- * Get ERC-20 token balance
+ * ERC-20 balance for a single known token address.
+ * Cached 30s. For bulk discovery, use getAllTokenBalances (Multicall3 path).
  */
 export const getTokenBalance = async (tokenAddress, walletAddress, chain) => {
-  try {
-    validateChain(chain, "getTokenBalance");
+  validateChain(chain, "getTokenBalance");
+  return withCache(
+    Key.tokenBalance(tokenAddress, walletAddress, chain.id),
+    TTL.TOKEN_BALANCE,
+    async () => {
+      const provider = createProviderForChain(chain);
+      const contract = new ethers.Contract(tokenAddress, ERC20_ABI, provider);
 
-    const MINIMAL_ERC20_ABI = [
-      "function balanceOf(address) view returns (uint256)",
-      "function symbol() view returns (string)",
-      "function decimals() view returns (uint8)",
-    ];
+      const [balance, decimals, symbol] = await Promise.all([
+        contract.balanceOf(walletAddress),
+        contract.decimals(),
+        contract.symbol(),
+      ]);
 
-    const provider = createProviderForChain(chain);
-    const contract = new ethers.Contract(
-      tokenAddress,
-      MINIMAL_ERC20_ABI,
-      provider,
-    );
-
-    const [balance, decimals, symbol] = await Promise.all([
-      contract.balanceOf(walletAddress),
-      contract.decimals(),
-      contract.symbol(),
-    ]);
-
-    return {
-      wei: balance.toString(),
-      formatted: ethers.formatUnits(balance, decimals),
-      symbol,
-      decimals: Number(decimals),
-      address: tokenAddress,
-    };
-  } catch (error) {
-    console.error("[getTokenBalance] Error:", error);
-    throw error;
-  }
-};
-
-// ============================================================================
-// TOKEN BALANCE UTILITIES (Enhanced API + Fallback)
-// ============================================================================
-
-// List of chains that don't support Alchemy Enhanced APIs
-const CHAINS_WITHOUT_EAPI_SUPPORT = [
-  5000, // Mantle Mainnet
-  5001, // Mantle Testnet
-  // Add other unsupported chains as needed
-];
-
-// Known tokens for chains without Enhanced API support
-const KNOWN_TOKENS = {
-  5000: [
-    // Mantle Mainnet
-    {
-      address: "0x09Bc4E0D864854c6aFB6eB9A9cdF58aC190D0dF9",
-      symbol: "USDC",
-      name: "USD Coin",
-      decimals: 6,
+      const dec = Number(decimals);
+      return {
+        wei: balance.toString(),
+        formatted: ethers.formatUnits(balance, dec),
+        symbol,
+        decimals: dec,
+        address: tokenAddress,
+      };
     },
-    {
-      address: "0x201EBa5CC46D216Ce6DC03F6a759e8E766e956aE",
-      symbol: "USDT",
-      name: "Tether USD",
-      decimals: 6,
-    },
-    {
-      address: "0xdEAddEaDdeadDEadDEADDEAddEADDEAddead1111",
-      symbol: "WETH",
-      name: "Wrapped Ether",
-      decimals: 18,
-    },
-    {
-      address: "0x78c1b0C915c4FAA5FffA6CAbf0219DA63d7f4cb8",
-      symbol: "WMNT",
-      name: "Wrapped Mantle",
-      decimals: 18,
-    },
-  ],
-  5001: [
-    // Mantle Testnet
-    {
-      address: "0x5C48e07062CCEbB1Db4786f5ca569887F4E39Df7",
-      symbol: "USDC",
-      name: "USD Coin",
-      decimals: 6,
-    },
-  ],
-  // Add other chains here as needed
+  );
 };
 
 /**
- * Fallback: Manual token balance fetching for chains without EAPI support
+ * Discover and return all ERC-20 tokens held by `address` on `chain`.
+ * Cached 5min with stale-while-revalidate so the UI is never blocked.
+ *
+ * Strategy:
+ *   1. eth_getLogs scan for incoming Transfer events (standard, no API key)
+ *   2. KNOWN_TOKENS fallback for chains with limited log history or known assets
+ *   3. Merge + batch Multicall3 balanceOf → single eth_call for all balances
+ *   4. Return only tokens with a non-zero balance
  */
-const getTokenBalancesManually = async (address, chain) => {
-  try {
-    const provider = createProviderForChain(chain);
-
-    const knownTokens = KNOWN_TOKENS[chain.id] || [];
-
-    if (knownTokens.length === 0) {
-      console.warn(
-        `[getTokenBalancesManually] No known tokens configured for chain ${chain.name} (${chain.id})`,
-      );
-      return [];
-    }
-
-    const ERC20_ABI = [
-      "function balanceOf(address) view returns (uint256)",
-      "function name() view returns (string)",
-      "function symbol() view returns (string)",
-      "function decimals() view returns (uint8)",
-    ];
-
-    const tokensWithBalances = await Promise.all(
-      knownTokens.map(async (tokenInfo) => {
-        try {
-          const contract = new ethers.Contract(
-            tokenInfo.address,
-            ERC20_ABI,
-            provider,
-          );
-
-          const balance = await contract.balanceOf(address);
-
-          // Skip if balance is zero
-          if (balance === 0n || balance.toString() === "0") {
-            return null;
-          }
-
-          // Try to fetch metadata if not provided
-          let name = tokenInfo.name;
-          let symbol = tokenInfo.symbol;
-          let decimals = tokenInfo.decimals;
-
-          if (!name || !symbol || !decimals) {
-            try {
-              [name, symbol, decimals] = await Promise.all([
-                contract.name(),
-                contract.symbol(),
-                contract.decimals(),
-              ]);
-            } catch (metadataError) {
-              console.warn(
-                `[getTokenBalancesManually] Could not fetch metadata for ${tokenInfo.address}`,
-              );
-            }
-          }
-
-          return {
-            address: tokenInfo.address,
-            balance: balance.toString(),
-            formatted: ethers.formatUnits(balance, decimals || 18),
-            name: name || "Unknown Token",
-            symbol: symbol || "???",
-            decimals: decimals || 18,
-            logo: null, // No logo available in manual mode
-          };
-        } catch (err) {
-          console.error(
-            `[getTokenBalancesManually] Error fetching balance for ${tokenInfo.address}:`,
-            err,
-          );
-          return null;
-        }
-      }),
-    );
-
-    return tokensWithBalances.filter((token) => token !== null);
-  } catch (error) {
-    console.error("[getTokenBalancesManually] Error:", error);
-    return [];
-  }
+export const getAllTokenBalances = async (address, chain, { onRefresh } = {}) => {
+  validateChain(chain, "getAllTokenBalances");
+  return withCache(
+    Key.tokenBalances(address, chain.id),
+    TTL.TOKEN_LIST,
+    () => {
+      const provider = createProviderForChain(chain);
+      return getTokensWithKnownFallback(provider, address, chain);
+    },
+    { persist: true, onRefresh },
+  );
 };
 
 /**
- * Get all token balances for an address (with Enhanced API + Fallback)
- */
-export const getAllTokenBalances = async (address, chain) => {
-  try {
-    validateChain(chain, "getAllTokenBalances");
-
-    // Check if chain supports Alchemy Enhanced APIs
-    const supportsEAPI = !CHAINS_WITHOUT_EAPI_SUPPORT.includes(chain.id);
-
-    if (!supportsEAPI) {
-      console.log(
-        `[getAllTokenBalances] Chain ${chain.name} (${chain.id}) doesn't support Alchemy EAPIs, using manual method...`,
-      );
-      return await getTokenBalancesManually(address, chain);
-    }
-
-    // Use Alchemy Enhanced API for supported chains
-    const alchemy = getAlchemyInstance(chain.id);
-
-    let balances;
-    try {
-      balances = await alchemy.core.getTokenBalances(address);
-    } catch (alchemyError) {
-      // If we get an EAPI error even though chain should be supported, fallback
-      if (
-        alchemyError.message?.includes("EAPIs not enabled") ||
-        alchemyError.message?.includes("EAPI")
-      ) {
-        console.warn(
-          `[getAllTokenBalances] EAPI not available for ${chain.name}, falling back to manual method...`,
-        );
-        return await getTokenBalancesManually(address, chain);
-      }
-      throw alchemyError;
-    }
-
-    const nonZeroBalances = balances.tokenBalances.filter(
-      (token) => token.tokenBalance !== "0" && token.tokenBalance !== "0x0",
-    );
-
-    const tokensWithMetadata = await Promise.all(
-      nonZeroBalances.map(async (token) => {
-        try {
-          const metadata = await alchemy.core.getTokenMetadata(
-            token.contractAddress,
-          );
-
-          return {
-            address: token.contractAddress,
-            balance: token.tokenBalance,
-            formatted: ethers.formatUnits(
-              token.tokenBalance || "0",
-              metadata.decimals || 18,
-            ),
-            name: metadata.name,
-            symbol: metadata.symbol,
-            decimals: metadata.decimals || 18,
-            logo: metadata.logo,
-          };
-        } catch (err) {
-          console.error(
-            "[getAllTokenBalances] Error fetching token metadata:",
-            err,
-          );
-          return null;
-        }
-      }),
-    );
-
-    return tokensWithMetadata.filter((token) => token !== null);
-  } catch (error) {
-    console.error("[getAllTokenBalances] Error:", error);
-    return [];
-  }
-};
-
-/**
- * Get all token balances across multiple chains
+ * Token balances across multiple chains in parallel.
+ * Returns an object keyed by chainId.
  */
 export const getAllTokenBalancesMultiChain = async (address, chains) => {
-  try {
-    console.log(
-      "[getAllTokenBalancesMultiChain] Fetching tokens for:",
-      address,
-    );
-
-    const tokenPromises = chains.map(async (chain) => {
+  const results = await Promise.all(
+    chains.map(async (chain) => {
       try {
         const tokens = await getAllTokenBalances(address, chain);
-        return {
-          chainId: chain.id,
-          chainName: chain.name,
-          tokens,
-        };
-      } catch (error) {
-        console.error(
-          `[getAllTokenBalancesMultiChain] Error for ${chain.name}:`,
-          error,
-        );
-        return {
-          chainId: chain.id,
-          chainName: chain.name,
-          tokens: [],
-          error: error.message,
-        };
+        return { chainId: chain.id, tokens };
+      } catch {
+        return { chainId: chain.id, tokens: [] };
       }
-    });
+    }),
+  );
 
-    const results = await Promise.all(tokenPromises);
-
-    // Return as object keyed by chainId
-    return results.reduce((acc, result) => {
-      acc[result.chainId] = result.tokens;
-      return acc;
-    }, {});
-  } catch (error) {
-    console.error("[getAllTokenBalancesMultiChain] Error:", error);
-    throw error;
-  }
+  return results.reduce((acc, r) => {
+    acc[r.chainId] = r.tokens;
+    return acc;
+  }, {});
 };
 
 /**
- * Check if address has balance (native or tokens)
+ * Returns true if the address holds any native token or ERC-20 balance.
+ * Both checks run in parallel.
  */
 export const hasBalance = async (address, chain) => {
-  try {
-    validateChain(chain, "hasBalance");
+  validateChain(chain, "hasBalance");
 
-    // Check native balance
-    const nativeBalance = await getNativeBalance(address, chain);
-    if (parseFloat(nativeBalance.formatted) > 0) {
-      return true;
-    }
+  const [native, tokens] = await Promise.all([
+    getNativeBalance(address, chain).catch(() => ({ formatted: "0" })),
+    getAllTokenBalances(address, chain).catch(() => []),
+  ]);
 
-    // Check token balances
-    const tokens = await getAllTokenBalances(address, chain);
-    return tokens.length > 0;
-  } catch (error) {
-    console.error("[hasBalance] Error:", error);
-    return false;
-  }
+  return parseFloat(native.formatted) > 0 || tokens.length > 0;
 };

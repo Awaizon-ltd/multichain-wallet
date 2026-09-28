@@ -1,88 +1,90 @@
-// Theme.js - Yellow & Orange Accent Overhaul
+// Theme.js — White / Charcoal, yellow-green brand accent
 const lightTheme = {
   // Backgrounds
-  background: "#FDF8EE", // Warm cream
-  surface: "#FFFFFF",
+  background: "#FFFFFF",
+  surface: "#F7F7F7",
   card: "#FFFFFF",
-  cardElevated: "#FFFBF2",
-  subCard: "#1E1A12",
+  cardElevated: "#F2F2F2",
+  subCard: "#141414",
 
-  welcome: "#F0A500", // Rich amber-yellow
+  welcome: "#D6FA1B", // brand yellow-green
 
   // Text
-  text: "#1F1A0E", // Warm near-black
-  textSecondary: "#5C4D2A", // Dark warm brown
-  textTertiary: "#7A6840", // Medium warm brown
+  text: "#0A0A0A",
+  textSecondary: "#3F3F3F",
+  textTertiary: "#767676",
 
-  // Primary colors - Yellow/Amber palette
-  primary: "#F0A500", // Rich amber-yellow
-  primaryDark: "#C47F00", // Deep amber
-  primaryLight: "#F7C84A", // Soft golden yellow
-  primaryMuted: "#FDE8A8", // Very soft yellow for backgrounds
+  // Primary — yellow-green brand accent
+  primary: "#99b60a",
+  primaryDark: "#A8C700", // pressed / darker state
+  primaryLight: "#c4dc37", // lighter highlight
+  primaryMuted: "#F6FFD6", // very soft tint for pills/backgrounds
 
   // Semantic colors
   success: "#2E7D32",
   successLight: "#4CAF50",
   error: "#C62828",
   errorLight: "#EF5350",
-  warning: "#E65100", // Deep burnt orange
+  warning: "#E65100",
   warningLight: "#FF6D00",
   info: "#1565C0",
   infoLight: "#2196F3",
 
   // Borders & Dividers
-  border: "#EDD89A",
-  borderStrong: "#D9BF72",
-  divider: "#F2E5C0",
+  border: "#E6E6E6",
+  borderStrong: "#D0D0D0",
+  divider: "#EFEFEF",
+  cardBorder: "#000000",
 
   // Interactive states
-  hover: "#FDF0C8",
-  pressed: "#F7E0A0",
+  hover: "#F6FFD6",
+  pressed: "#E7FC70",
   disabled: "#E0E0E0",
   disabledText: "#9E9E9E",
 };
 
 const darkTheme = {
-  // Backgrounds - Deep warm darks
-  background: "#000000", // Very dark warm black
-  surface: "#22211f", // Warm dark surface
-  card: "#1c1b19", // Warm card
-  cardElevated: "#1c1a18", // Higher elevation
-  subCard: "#FDF8EE",
+  // Backgrounds — charcoal, not pure black
+  background: "#121212",
+  surface: "#1A1A1A",
+  card: "#1E1E1E",
+  cardElevated: "#282828",
+  subCard: "#F5F5F5",
 
-  welcome: "#F7C84A", // Bright golden yellow
+  welcome: "#D6FA1B",
 
   // Text
-  text: "#F5EDD8", // Warm off-white
-  textSecondary: "#C9A96E", // Muted gold (high visibility)
-  textTertiary: "#8C7040", // Deep warm tan
+  text: "#F5F5F5",
+  textSecondary: "#C2C2C2",
+  textTertiary: "#8A8A8A",
 
-  // Primary colors - Warm yellow/orange optimized for dark
-  primary: "#F7C84A", // Bright golden yellow
-  primaryDark: "#F0A500", // Amber
-  primaryLight: "#FFE080", // Light gold
-  primaryMuted: "#3D2E00", // Very dark amber for subtle backgrounds
+  // Primary — same brand yellow-green, tuned for dark
+  primary: "#D6FA1B",
+  primaryDark: "#A8C700",
+  primaryLight: "#E7FC70",
+  primaryMuted: "#242B00", // dark olive tint for subtle backgrounds
 
   // Semantic colors
   success: "#66BB6A",
   successLight: "#81C784",
   error: "#EF5350",
   errorLight: "#E57373",
-  warning: "#FF6D00", // Vivid burnt orange
+  warning: "#FF6D00",
   warningLight: "#FF9E40",
   info: "#29B6F6",
   infoLight: "#4FC3F7",
 
   // Borders & Dividers
-  border: "#3D2E0A", // Dark amber border
-  borderStrong: "#5C4510",
-  divider: "#261F08",
+  border: "#2C2C2C",
+  borderStrong: "#3C3C3C",
+  divider: "#242424",
+  cardBorder: "#3C3C3C",
 
   // Interactive states
-  hover: "#3D2E0A",
-  pressed: "#2E2106",
+  hover: "#242B00",
+  pressed: "#2E3600",
   disabled: "#2A2A2A",
-  disabledText: "#666666",
+  disabledText: "#6B6B6B",
 };
 
 export const SPACING = {

@@ -17,6 +17,7 @@ import Button from "../../components/common/Button";
 import Input from "../../components/common/Input";
 import Card from "../../components/common/Card";
 import ChainSwitcher from "../../components/wallet/ChainSwitcher";
+import ChainBadge from "../../components/common/ChainBadge";
 import { getTokenDetails, getTokenBalance } from "../../services/blockchain";
 import { saveToken, getDatabase } from "../../utils/Database";
 import { getTokensByChain } from "../../utils/TokenDatabase";
@@ -331,15 +332,21 @@ const TokenImportScreen = ({ navigation }) => {
           <Card style={styles.tokenCard}>
             {/* Token Header - Minimal */}
             <View style={styles.tokenHeader}>
-              {logoUrl ? (
-                <Image source={{ uri: logoUrl }} style={styles.tokenLogo} />
-              ) : (
-                <View style={styles.tokenLogoPlaceholder}>
-                  <Text style={styles.tokenLogoText}>
-                    {tokenInfo.symbol.substring(0, 2).toUpperCase()}
-                  </Text>
-                </View>
-              )}
+              <View style={styles.tokenLogoOuterWrap}>
+                {logoUrl ? (
+                  <Image source={{ uri: logoUrl }} style={styles.tokenLogo} />
+                ) : (
+                  <View style={styles.tokenLogoPlaceholder}>
+                    <Text style={styles.tokenLogoText}>
+                      {tokenInfo.symbol.substring(0, 2).toUpperCase()}
+                    </Text>
+                  </View>
+                )}
+                <ChainBadge
+                  uri={selectedChain?.icon}
+                  borderColor={theme.COLORS.card}
+                />
+              </View>
 
               <View style={styles.tokenInfo}>
                 <Text style={styles.tokenName}>{tokenInfo.name}</Text>
@@ -549,6 +556,7 @@ const createStyles = (theme) =>
       borderBottomWidth: 1,
       borderBottomColor: theme.COLORS.border,
     },
+    tokenLogoOuterWrap: { position: "relative" },
     tokenLogo: {
       width: 40,
       height: 40,

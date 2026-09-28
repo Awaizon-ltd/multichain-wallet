@@ -4,8 +4,9 @@ import { useWallet } from "../contexts/WalletContext";
 import { useChain } from "../contexts/ChainContext";
 import { parseUnits, formatUnits } from "ethers";
 import { API_CONFIG } from "../config/api";
+import { apiGet } from "../services/apiClient";
+import { TTL } from "../utils/cache/DataCache";
 
-const API_BASE_URL = API_CONFIG.BASE_URL;
 const DEFAULT_SLIPPAGE = 0.01;
 const NATIVE_TOKEN_ADDRESS = "0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE";
 
@@ -83,6 +84,29 @@ export function useSwap() {
   const priceAbortRef = useRef(null);
   const quoteAbortRef = useRef(null);
 
+  // Buy-token preselection from outside the screen (e.g. "Swap" on a token's
+  // detail page). If the token is on another chain, it waits here until that
+  // chain's token list has loaded, then replaces the default buy token.
+  const pendingBuyRef = useRef(null);
+  const loadedRef = useRef({ chainId: null, tokens: [] });
+
+  const applyBuyToken = useCallback((token, tokens) => {
+    const same = (a, b) =>
+      a && b && (a.isNative && b.isNative
+        ? true
+        : !a.isNative && !b.isNative &&
+          a.address?.toLowerCase() === b.address?.toLowerCase());
+    const target = tokens.find((t) => same(t, token)) ?? token;
+    setBuyToken(target);
+    setSellToken((prev) => {
+      if (prev && !same(prev, target)) return prev;
+      return tokens.find((t) => !same(t, target)) ?? null;
+    });
+    setSellAmount("");
+    setBuyAmountEstimate("");
+    setPriceInfo(null);
+  }, []);
+
   useEffect(() => {
     if (activeChain?.id) {
       if (__DEV__)
@@ -101,45 +125,59 @@ export function useSwap() {
   }, [activeChain?.id]);
 
   // ── Token loading ────────────────────────────────────────────────────────────
+  // Cached 10min via apiClient — a chain's token catalog barely changes, so
+  // switching chains and coming back doesn't re-fetch it every time.
   const loadTokens = useCallback(async () => {
     try {
       setLoadingTokens(true);
-      const url = `${API_BASE_URL}/swap/tokens?chainId=${activeChain.id}`;
-      if (__DEV__) console.log(`[useSwap loadTokens] GET ${url}`);
+      if (__DEV__) console.log(`[useSwap loadTokens] chainId=${activeChain.id}`);
 
-      const res = await fetch(url);
-      const json = await res.json();
+      const json = await apiGet(API_CONFIG.ENDPOINTS.SWAP_TOKENS, {
+        params: { chainId: activeChain.id },
+        ttl: TTL.API_TOKEN_CATALOG,
+      });
 
       if (__DEV__)
         console.log(
-          `[useSwap loadTokens] success=${json.success}  count=${json.data?.tokens?.length}`,
+          `[useSwap loadTokens] count=${json.data?.tokens?.length}`,
         );
-      if (json.data?.tokens?.length > 0) {
-        if (__DEV__)
-          console.log(
-            `[useSwap loadTokens] token[0]:`,
-            JSON.stringify(json.data.tokens[0]),
-          );
-        if (__DEV__)
-          console.log(
-            `[useSwap loadTokens] token[1]:`,
-            JSON.stringify(json.data.tokens[1]),
-          );
-      }
 
-      if (json.success) {
-        setTokenList(json.data.tokens);
-        if (json.data.tokens.length >= 2) {
-          setSellToken(json.data.tokens[0]);
-          setBuyToken(json.data.tokens[1]);
-        }
+      setTokenList(json.data.tokens);
+      loadedRef.current = { chainId: activeChain.id, tokens: json.data.tokens };
+      if (json.data.tokens.length >= 2) {
+        setSellToken(json.data.tokens[0]);
+        setBuyToken(json.data.tokens[1]);
+      }
+      const pending = pendingBuyRef.current;
+      if (pending && pending.chainId === activeChain.id) {
+        pendingBuyRef.current = null;
+        applyBuyToken(pending, json.data.tokens);
       }
     } catch (err) {
       if (__DEV__) console.error("[useSwap loadTokens] ERROR:", err.message);
+      setError(err.message || "Couldn't load tokens for this chain");
     } finally {
       setLoadingTokens(false);
     }
-  }, [activeChain?.id]);
+  }, [activeChain?.id, applyBuyToken]);
+
+  /**
+   * Preselect the token to buy. token: { chainId, address, symbol, name,
+   * decimals, logoURI, isNative }. Applies now if that chain's list is
+   * already loaded, otherwise once it loads (after a chain switch).
+   */
+  const queueBuyToken = useCallback(
+    (token) => {
+      const loaded = loadedRef.current;
+      if (loaded.chainId === token.chainId && loaded.tokens.length) {
+        pendingBuyRef.current = null;
+        applyBuyToken(token, loaded.tokens);
+      } else {
+        pendingBuyRef.current = token;
+      }
+    },
+    [applyBuyToken],
+  );
 
   // ── Price fetch ──────────────────────────────────────────────────────────────
   const fetchPrice = useCallback(async () => {
@@ -204,66 +242,29 @@ export function useSwap() {
       if (__DEV__) console.log("[useSwap fetchPrice] sellAddr:", sellAddr);
       if (__DEV__) console.log("[useSwap fetchPrice] buyAddr :", buyAddr);
 
-      const params = new URLSearchParams({
-        chainId: activeChain.id,
-        sellToken: sellAddr,
-        buyToken: buyAddr,
-        sellAmount: sellAmountWei,
-        slippagePercentage: slippage,
-        ...(address && { takerAddress: address }),
+      if (__DEV__) console.log("\n[useSwap fetchPrice] Step 3 — apiGet");
+
+      // Never cached — price depends on live market + the exact amount typed.
+      const json = await apiGet(API_CONFIG.ENDPOINTS.SWAP_PRICE, {
+        ttl: 0,
+        signal: priceAbortRef.current.signal,
+        params: {
+          chainId: activeChain.id,
+          sellToken: sellAddr,
+          buyToken: buyAddr,
+          sellAmount: sellAmountWei,
+          slippagePercentage: slippage,
+          ...(address && { takerAddress: address }),
+        },
       });
 
-      const url = `${API_BASE_URL}/swap/price?${params}`;
-      if (__DEV__) console.log("\n[useSwap fetchPrice] Step 3 — fetch");
-      if (__DEV__) console.log("[useSwap fetchPrice] URL:", url);
-
-      // ── Step 3: fetch ───────────────────────────────────────────────────────
-      const res = await fetch(url, { signal: priceAbortRef.current.signal });
-
       if (__DEV__)
         console.log(
-          "[useSwap fetchPrice] HTTP status:",
-          res.status,
-          res.statusText,
-        );
-
-      const json = await res.json();
-
-      if (__DEV__)
-        console.log("\n[useSwap fetchPrice] Step 4 — parse response");
-      if (__DEV__)
-        console.log("[useSwap fetchPrice] json.success     :", json.success);
-      if (__DEV__)
-        console.log(
-          "[useSwap fetchPrice] json.error       :",
-          json.error ?? "(none)",
-        );
-      if (__DEV__)
-        console.log(
-          "[useSwap fetchPrice] json.data keys   :",
-          json.data ? Object.keys(json.data).join(", ") : "null",
-        );
-      if (__DEV__)
-        console.log(
-          "[useSwap fetchPrice] json.data.buyAmount :",
+          "[useSwap fetchPrice] buyAmount:",
           json.data?.buyAmount,
-          " type:",
-          typeof json.data?.buyAmount,
-        );
-      if (__DEV__)
-        console.log(
-          "[useSwap fetchPrice] json.data.price     :",
+          " price:",
           json.data?.price,
         );
-      if (__DEV__)
-        console.log(
-          "[useSwap fetchPrice] json.data.issues    :",
-          JSON.stringify(json.data?.issues ?? null),
-        );
-
-      if (!json.success) {
-        throw new Error(json.error || "Failed to fetch price");
-      }
 
       const data = json.data;
       setPriceInfo(data);
@@ -296,17 +297,16 @@ export function useSwap() {
       setBuyAmountEstimate(estimate);
       if (__DEV__) console.log("\n[useSwap fetchPrice] ✅ SUCCESS");
     } catch (err) {
-      if (err.name === "AbortError") {
+      // apiGet() already humanizes errors into { title, message, type } —
+      // "cancelled" means a newer request superseded this one, not a failure.
+      if (err.type === "cancelled") {
         if (__DEV__)
           console.log(
             "[useSwap fetchPrice] aborted (new request superseded this one)",
           );
         return;
       }
-      if (__DEV__) console.error("\n[useSwap fetchPrice] ❌ ERROR");
-      if (__DEV__) console.error("[useSwap fetchPrice] name   :", err.name);
-      if (__DEV__) console.error("[useSwap fetchPrice] message:", err.message);
-      if (__DEV__) console.error("[useSwap fetchPrice] stack  :", err.stack);
+      if (__DEV__) console.error("[useSwap fetchPrice] ❌ ERROR:", err.message);
       setError(err.message);
       setBuyAmountEstimate("");
       setPriceInfo(null);
@@ -355,56 +355,34 @@ export function useSwap() {
       const sellAddr = resolveTokenAddress(sellToken);
       const buyAddr = resolveTokenAddress(buyToken);
 
-      const params = new URLSearchParams({
-        chainId: activeChain.id,
-        sellToken: sellAddr,
-        buyToken: buyAddr,
-        sellAmount: sellAmountWei,
-        slippagePercentage: slippage,
-        ...(address && { takerAddress: address }),
+      // Never cached — a quote is single-use (nonce/allowance-target tied to
+      // this exact request) and must always reflect the current market.
+      const json = await apiGet(API_CONFIG.ENDPOINTS.SWAP_QUOTE, {
+        ttl: 0,
+        signal: quoteAbortRef.current.signal,
+        params: {
+          chainId: activeChain.id,
+          sellToken: sellAddr,
+          buyToken: buyAddr,
+          sellAmount: sellAmountWei,
+          slippagePercentage: slippage,
+          ...(address && { takerAddress: address }),
+        },
       });
 
-      const url = `${API_BASE_URL}/swap/quote?${params}`;
-      if (__DEV__) console.log("[useSwap fetchQuote] URL:", url);
-
-      const res = await fetch(url, { signal: quoteAbortRef.current.signal });
-      if (__DEV__) console.log("[useSwap fetchQuote] HTTP status:", res.status);
-
-      const json = await res.json();
-      if (__DEV__)
-        console.log(
-          "[useSwap fetchQuote] success:",
-          json.success,
-          " error:",
-          json.error ?? "(none)",
-        );
       if (__DEV__)
         console.log(
           "[useSwap fetchQuote] needsApproval:",
           json.data?.needsApproval,
-        );
-      if (__DEV__)
-        console.log(
-          "[useSwap fetchQuote] allowanceTarget:",
-          json.data?.allowanceTarget,
-        );
-      if (__DEV__)
-        console.log(
-          "[useSwap fetchQuote] buyAmount:",
+          " buyAmount:",
           json.data?.buyAmount,
-          "type:",
-          typeof json.data?.buyAmount,
         );
-
-      if (!json.success) {
-        throw new Error(json.error || "Failed to fetch quote");
-      }
 
       setQuote(json.data);
       if (__DEV__) console.log("[useSwap fetchQuote] ✅ SUCCESS");
       return json.data;
     } catch (err) {
-      if (err.name === "AbortError") return;
+      if (err.type === "cancelled") return;
       if (__DEV__) console.error("[useSwap fetchQuote] ❌ ERROR:", err.message);
       setError(err.message);
       throw err;
@@ -518,6 +496,7 @@ export function useSwap() {
     buyAmountEstimate,
     setSellToken,
     setBuyToken,
+    queueBuyToken,
     setSellAmount,
     flipTokens,
     setMaxAmount,

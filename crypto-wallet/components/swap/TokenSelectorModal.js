@@ -12,6 +12,7 @@ import {
 } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import { useTheme } from "../../contexts/ThemeContext";
+import ChainBadge from "../common/ChainBadge";
 
 // ─── Multi-source logo fallback ───────────────────────────────────────────────
 // Mirrors the same logic in SwapScreen's TokenLogo so icons are consistent
@@ -93,7 +94,7 @@ const TokenIcon = memo(({ logoURI, address, symbol, size = 44, theme }) => {
 });
 
 // ─── TokenItem ────────────────────────────────────────────────────────────────
-const TokenItem = memo(({ token, onSelect, isSelected, theme }) => {
+const TokenItem = memo(({ token, chainIcon, onSelect, isSelected, theme }) => {
   const styles = createStyles(theme);
   const { COLORS } = theme;
 
@@ -103,14 +104,19 @@ const TokenItem = memo(({ token, onSelect, isSelected, theme }) => {
       onPress={() => onSelect(token)}
       activeOpacity={0.7}
     >
-      <View style={styles.iconWrap}>
-        <TokenIcon
-          logoURI={token.logoURI}
-          address={token.address}
-          symbol={token.symbol}
-          size={44}
-          theme={theme}
-        />
+      <View style={styles.iconOuterWrap}>
+        <View style={styles.iconWrap}>
+          <TokenIcon
+            logoURI={token.logoURI}
+            address={token.address}
+            symbol={token.symbol}
+            size={44}
+            theme={theme}
+          />
+        </View>
+        {!token.isNative && (
+          <ChainBadge uri={chainIcon} borderColor={COLORS.background} />
+        )}
       </View>
 
       <View style={styles.tokenInfo}>
@@ -135,6 +141,7 @@ export const TokenSelectorModal = ({
   tokens = [],
   selectedToken = null,
   excludeToken = null,
+  chainIcon = null,
   title = "Select Token",
 }) => {
   const theme = useTheme();
@@ -188,12 +195,13 @@ export const TokenSelectorModal = ({
     ({ item }) => (
       <TokenItem
         token={item}
+        chainIcon={chainIcon}
         onSelect={handleSelect}
         isSelected={selectedToken?.address === item.address}
         theme={theme}
       />
     ),
-    [selectedToken, handleSelect, theme],
+    [selectedToken, handleSelect, theme, chainIcon],
   );
 
   const renderEmpty = () => (
@@ -337,11 +345,11 @@ const createStyles = (theme) => {
       borderRadius: BORDER_RADIUS.lg,
     },
     tokenItemSelected: { backgroundColor: COLORS.primaryMuted },
+    iconOuterWrap: { position: "relative", marginRight: SPACING.md },
     iconWrap: {
       width: 44,
       height: 44,
       borderRadius: 22,
-      marginRight: SPACING.md,
       overflow: "hidden",
       backgroundColor: COLORS.surface,
       borderWidth: 1,

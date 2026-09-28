@@ -234,8 +234,8 @@ const PaymentScreen = ({ navigation, route }) => {
         </Text>
         <Text style={[styles.emptyBody, { color: COLORS.textSecondary }]}>
           {activeChain.testnet
-            ? `${activeChain.name} is a test network. Switch to Ethereum, Base, or Mantle to make payments.`
-            : `Payments are not available on ${activeChain.name} yet. Supported chains: Ethereum, Base, Mantle.`}
+            ? `${activeChain.name} is a test network. Switch to Ethereum or Base to make payments.`
+            : `Payments are not available on ${activeChain.name} yet. Supported chains: Ethereum, Base.`}
         </Text>
       </View>
     );

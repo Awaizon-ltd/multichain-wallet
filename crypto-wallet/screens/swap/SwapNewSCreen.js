@@ -15,11 +15,12 @@ import {
   StyleSheet,
   ActivityIndicator,
   ScrollView,
-  SafeAreaView,
   RefreshControl,
   Image,
 } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
+import { SafeAreaView } from "react-native-safe-area-context";
+import { useNavigation, useRoute } from "@react-navigation/native";
 import { useTheme } from "../../contexts/ThemeContext";
 import { useWallet } from "../../contexts/WalletContext";
 import { useChain } from "../../contexts/ChainContext";
@@ -27,6 +28,12 @@ import { useSwap } from "../../hooks/useSwap";
 import { TokenSelectorModal } from "../../components/swap/TokenSelectorModal";
 import { SwapConfirmModal } from "../../components/swap/SwapConfirmModal";
 import ChainSwitcher from "../../components/wallet/ChainSwitcher";
+import TrendingTokens from "../../components/swap/TrendingTokens";
+// ✅ Pull balance utils directly — no WalletContext wrapper needed
+import {
+  getTokenBalance as fetchERC20Balance,
+  getNativeBalance,
+} from "../../utils/blockchain/Balances";
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 const SLIPPAGE_OPTIONS = [0.005, 0.01, 0.02, 0.05];
@@ -583,9 +590,13 @@ export default function SwapScreen() {
   const theme = useTheme();
   const { COLORS, SPACING, FONTS, BORDER_RADIUS, SHADOWS } = theme;
 
-  const { activeChain } = useChain();
-  const { getActiveChainBalance, getTokenBalance } = useWallet();
+  const { activeChain, switchChainById } = useChain();
+  // ✅ Only need wallet.address from context — balance fetching goes direct to util
+  const { wallet } = useWallet();
   const swap = useSwap();
+  const navigation = useNavigation();
+  const route = useRoute();
+  const [trendingRefreshKey, setTrendingRefreshKey] = useState(0);
 
   const [showSellSelector, setShowSellSelector] = useState(false);
   const [showBuySelector, setShowBuySelector] = useState(false);
@@ -597,7 +608,6 @@ export default function SwapScreen() {
   const [sellBalance, setSellBalance] = useState("0");
   const [buyBalance, setBuyBalance] = useState("0");
 
-  const activeBalance = getActiveChainBalance();
   const sellAbortRef = useRef(null);
   const buyAbortRef = useRef(null);
 
@@ -605,7 +615,8 @@ export default function SwapScreen() {
     () =>
       StyleSheet.create({
         safeArea: { flex: 1, backgroundColor: COLORS.background },
-        scroll: { padding: SPACING.md, paddingBottom: SPACING.xxxl },
+        // Extra bottom room so the last trending row clears the floating tab bar
+        scroll: { padding: SPACING.md, paddingBottom: 120 },
         header: {
           flexDirection: "row",
           justifyContent: "space-between",
@@ -688,6 +699,10 @@ export default function SwapScreen() {
           ...SHADOWS.large,
         },
         swapBtnDisabled: { opacity: 0.4 },
+        swapBtnInsufficient: {
+          backgroundColor: COLORS.error,
+          opacity: 0.85,
+        },
         swapBtnText: {
           fontSize: FONTS.sizes.lg,
           fontWeight: "800",
@@ -716,37 +731,51 @@ export default function SwapScreen() {
       const controller = new AbortController();
       abortRef.current = controller;
 
-      if (!token) {
+      if (!token || !wallet?.address || !activeChain) {
         setter("0");
         return;
       }
 
-      if (token.isNative) {
-        setter(activeBalance?.formatted ?? "0");
-        return;
-      }
-
       try {
-        const bal = await getTokenBalance(
-          token.address,
-          token.decimals,
-          controller.signal,
-        );
-        if (!controller.signal.aborted) setter(safeFloat(bal) > 0 ? bal : "0");
-      } catch {
-        if (!controller.signal.aborted) setter("0");
+        let formatted;
+
+        if (token.isNative) {
+          // getNativeBalance(address, chain) → { formatted, wei, symbol, decimals }
+          const result = await getNativeBalance(wallet.address, activeChain);
+          formatted = result.formatted;
+        } else {
+          // getTokenBalance(tokenAddress, walletAddress, chain) → { formatted, wei, ... }
+          const result = await fetchERC20Balance(
+            token.address,
+            wallet.address,
+            activeChain,
+          );
+          formatted = result.formatted;
+        }
+
+        if (!controller.signal.aborted) {
+          setter(safeFloat(formatted) > 0 ? formatted : "0");
+        }
+      } catch (err) {
+        if (!controller.signal.aborted) {
+          console.warn("[SwapScreen] fetchBalance error:", err.message);
+          setter("0");
+        }
       }
     },
-    [activeBalance?.formatted, getTokenBalance],
+    // Re-runs when wallet address or chain changes (covers account switch + chain switch)
+    [wallet?.address, activeChain],
   );
 
+  // Re-fetch sell balance when token changes or wallet/chain context changes
   useEffect(() => {
     fetchBalance(swap.sellToken, sellAbortRef, setSellBalance);
-  }, [swap.sellToken?.address, activeBalance?.formatted]);
+  }, [swap.sellToken?.address, fetchBalance]);
 
+  // Re-fetch buy balance when token changes or wallet/chain context changes
   useEffect(() => {
     fetchBalance(swap.buyToken, buyAbortRef, setBuyBalance);
-  }, [swap.buyToken?.address, activeBalance?.formatted]);
+  }, [swap.buyToken?.address, fetchBalance]);
 
   // ── Debounced price fetch ────────────────────────────────────────────────────
   const debouncedSellAmount = useDebounce(swap.sellAmount, 400);
@@ -755,6 +784,25 @@ export default function SwapScreen() {
       swap.fetchPrice?.();
     }
   }, [debouncedSellAmount, swap.sellToken?.address, swap.buyToken?.address]);
+
+  // ── Preselected buy token (from a token's detail page) ───────────────────────
+  const presetBuy = route.params?.presetBuy;
+  useEffect(() => {
+    if (!presetBuy) return;
+    navigation.setParams({ presetBuy: undefined }); // apply once
+    swap.queueBuyToken(presetBuy);
+    if (presetBuy.chainId !== activeChain?.id) {
+      switchChainById(presetBuy.chainId).catch((err) =>
+        swap.setError(err?.message || "Couldn't switch network"),
+      );
+    }
+  }, [presetBuy]);
+
+  const handleTrendingPress = useCallback(
+    (token) =>
+      navigation.navigate("TokenDetail", { coinId: token.id, preview: token }),
+    [navigation],
+  );
 
   // ── Handlers ─────────────────────────────────────────────────────────────────
   const handleSwapPress = useCallback(async () => {
@@ -769,15 +817,22 @@ export default function SwapScreen() {
 
   const handleRefresh = useCallback(async () => {
     setRefreshing(true);
+    setTrendingRefreshKey((k) => k + 1);
     await swap.loadTokens();
+    // Re-fetch both balances after a pull-to-refresh
+    fetchBalance(swap.sellToken, sellAbortRef, setSellBalance);
+    fetchBalance(swap.buyToken, buyAbortRef, setBuyBalance);
     setRefreshing(false);
-  }, [swap.loadTokens]);
+  }, [swap.loadTokens, swap.sellToken, swap.buyToken, fetchBalance]);
 
   const handleSuccess = useCallback(() => {
     setShowConfirm(false);
     setCurrentQuote(null);
     swap.setSellAmount("");
-  }, [swap.setSellAmount]);
+    // Refresh both balances after a successful swap
+    fetchBalance(swap.sellToken, sellAbortRef, setSellBalance);
+    fetchBalance(swap.buyToken, buyAbortRef, setBuyBalance);
+  }, [swap.setSellAmount, swap.sellToken, swap.buyToken, fetchBalance]);
 
   const handleSellTokenSelect = useCallback(
     (token) => {
@@ -803,7 +858,6 @@ export default function SwapScreen() {
   );
 
   // ── Derived values ───────────────────────────────────────────────────────────
-  // Exchange rate now depends on buyAmountEstimate (human-readable) not priceInfo.price
   const exchangeRate = useMemo(
     () => swap.getExchangeRate(),
     [
@@ -816,8 +870,6 @@ export default function SwapScreen() {
 
   const priceImpact = useMemo(() => swap.getPriceImpact(), [swap.priceInfo]);
 
-  // USD prices — getSellUsdPrice/getBuyUsdPrice fall back gracefully when 0x v2
-  // doesn't return USD prices (which it doesn't on the /price endpoint)
   const sellUsdPrice = useMemo(
     () => swap.getSellUsdPrice(),
     [swap.sellToken, swap.priceInfo],
@@ -835,18 +887,33 @@ export default function SwapScreen() {
         ? COLORS.warning
         : COLORS.error;
 
+  const isInsufficientBalance = useMemo(() => {
+    const amount = safeFloat(swap.sellAmount);
+    const balance = safeFloat(sellBalance);
+    return amount > 0 && amount > balance;
+  }, [swap.sellAmount, sellBalance]);
+
   const swapBtnLabel = useMemo(() => {
     if (!swap.sellToken || !swap.buyToken) return "Select Tokens";
     if (safeFloat(swap.sellAmount) === 0) return "Enter Amount";
+    if (isInsufficientBalance)
+      return `Insufficient ${swap.sellToken.symbol} Balance`;
     if (swap.error) return "Invalid Swap";
     return "Swap";
-  }, [swap.sellToken, swap.buyToken, swap.sellAmount, swap.error]);
+  }, [
+    swap.sellToken,
+    swap.buyToken,
+    swap.sellAmount,
+    swap.error,
+    isInsufficientBalance,
+  ]);
 
   const showPriceInfo = !!(swap.priceInfo || swap.isFetchingPrice);
-  const swapDisabled = !swap.isReadyToSwap || swap.isFetchingQuote;
+  const swapDisabled =
+    !swap.isReadyToSwap || swap.isFetchingQuote || isInsufficientBalance;
 
   return (
-    <SafeAreaView style={styles.safeArea}>
+    <SafeAreaView style={styles.safeArea} edges={["top", "left", "right"]}>
       <ScrollView
         contentContainerStyle={styles.scroll}
         showsVerticalScrollIndicator={false}
@@ -971,7 +1038,12 @@ export default function SwapScreen() {
 
         {/* ── Swap Button ── */}
         <TouchableOpacity
-          style={[styles.swapBtn, swapDisabled && styles.swapBtnDisabled]}
+          style={[
+            styles.swapBtn,
+            isInsufficientBalance
+              ? styles.swapBtnInsufficient
+              : swapDisabled && styles.swapBtnDisabled,
+          ]}
           onPress={handleSwapPress}
           disabled={swapDisabled}
           activeOpacity={0.85}
@@ -981,7 +1053,7 @@ export default function SwapScreen() {
           ) : (
             <>
               <Text style={styles.swapBtnText}>{swapBtnLabel}</Text>
-              {swap.isReadyToSwap && (
+              {swap.isReadyToSwap && !isInsufficientBalance && (
                 <Ionicons
                   name="arrow-forward"
                   size={18}
@@ -998,6 +1070,12 @@ export default function SwapScreen() {
           <Text style={styles.poweredByText}>Powered by </Text>
           <Text style={styles.poweredByBrand}>0x Protocol</Text>
         </View>
+
+        {/* ── Trending across chains ── */}
+        <TrendingTokens
+          onTokenPress={handleTrendingPress}
+          refreshKey={trendingRefreshKey}
+        />
       </ScrollView>
 
       {/* ── Modals — only mounted when needed ── */}
@@ -1009,6 +1087,7 @@ export default function SwapScreen() {
           tokens={swap.tokenList}
           selectedToken={swap.sellToken}
           excludeToken={swap.buyToken}
+          chainIcon={activeChain?.icon}
           title="You Pay"
         />
       )}
@@ -1021,6 +1100,7 @@ export default function SwapScreen() {
           tokens={swap.tokenList}
           selectedToken={swap.buyToken}
           excludeToken={swap.sellToken}
+          chainIcon={activeChain?.icon}
           title="You Receive"
         />
       )}

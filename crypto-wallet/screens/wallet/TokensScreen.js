@@ -1,4 +1,20 @@
-import React, { useState, useEffect, useCallback, useRef } from "react";
+// screens/wallet/TokensScreen.js
+// ─────────────────────────────────────────────────────────────────────────────
+// Manage Tokens — the full catalog for the active chain, with a per-token
+// enable/disable switch. Enabled tokens are what shows up in the portfolio
+// (usePortfolioAssets.js reads exactly this list via TokenDatabase.js).
+//
+// Everything here reads through the shared data layer:
+//   • catalog          → services/apiClient.js  (cached 10min, same as useSwap)
+//   • balances         → one Multicall batch call for the whole catalog
+//   • prices           → services/coingecko.js  (already cached)
+//   • enabled/disabled → utils/TokenDatabase.js  (SQLite, same table the
+//                        portfolio reads — flipping a switch here is instant
+//                        everywhere else in the app)
+// No screen-local cache reimplementation — that was the old bug: a bespoke
+// AsyncStorage cache here, duplicating (and drifting from) the real one.
+// ─────────────────────────────────────────────────────────────────────────────
+import React, { useState, useEffect, useCallback, useRef, useMemo } from "react";
 import {
   View,
   Text,
@@ -6,440 +22,359 @@ import {
   FlatList,
   RefreshControl,
   TouchableOpacity,
+  TextInput,
   Image,
   ActivityIndicator,
-  Dimensions,
+  Switch,
 } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
+import { formatUnits } from "ethers";
 import { useWallet } from "../../contexts/WalletContext";
 import { useChain } from "../../contexts/ChainContext";
 import { useTheme } from "../../contexts/ThemeContext";
 import Button from "../../components/common/Button";
-import { deleteToken, saveToken } from "../../utils/Database";
-import { getTokensByChain } from "../../utils/TokenDatabase";
-import tokenList from "../../tokens/TokenList";
+import {
+  enableToken,
+  disableToken,
+  getEnabledAddressSet,
+} from "../../utils/TokenDatabase";
+import { getNativeBalance } from "../../utils/blockchain/Balances";
+import { batchGetTokenBalances } from "../../utils/cache/Multicall";
+import { apiGet } from "../../services/apiClient";
+import { TTL } from "../../utils/cache/DataCache";
+import { humanizeError } from "../../utils/errors/humanizeError";
 import coinGeckoService from "../../services/coingecko";
 import Alert from "../../utils/Alert";
-import { Contract, formatUnits, ZeroAddress } from "ethers";
-import AsyncStorage from "@react-native-async-storage/async-storage";
+import ChainBadge from "../../components/common/ChainBadge";
 
-const { width } = Dimensions.get("window");
+const NATIVE_TOKEN_ADDRESS = "0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE";
+const MAX_PRICE_FETCHES = 40; // cap CoinGecko calls per load — prices are a nice-to-have, not blocking
 
-// Cache keys
-const CACHE_KEYS = {
-  TOKEN_METADATA: "token_metadata_cache_",
-  CACHE_TIMESTAMP: "token_cache_timestamp_",
+// ─── Formatting helpers ───────────────────────────────────────────────────────
+
+const formatNumber = (num, decimals = 4) => {
+  const n = parseFloat(num);
+  if (!n) return "0";
+  if (n < 0.000001) return "< 0.000001";
+  if (n < 0.01) return n.toFixed(6);
+  if (n < 1) return n.toFixed(4);
+  if (n < 1000) return n.toFixed(decimals);
+  if (n < 1_000_000) return n.toLocaleString("en-US", { maximumFractionDigits: decimals });
+  if (n < 1_000_000_000) return `${(n / 1_000_000).toFixed(2)}M`;
+  return `${(n / 1_000_000_000).toFixed(2)}B`;
 };
 
-// Cache expiry (1 hour for metadata, prices fetched fresh)
-const METADATA_CACHE_DURATION = 60 * 60 * 1000; // 1 hour
+const formatCurrency = (value) => {
+  const n = parseFloat(value);
+  if (!n) return "$0.00";
+  if (n < 0.01) return "< $0.01";
+  if (n < 1000) return `$${n.toFixed(2)}`;
+  if (n < 1_000_000) return `$${n.toLocaleString("en-US", { maximumFractionDigits: 2 })}`;
+  return `$${(n / 1_000_000).toFixed(2)}M`;
+};
+
+// ─── Row ──────────────────────────────────────────────────────────────────────
+
+const TokenRow = React.memo(
+  ({ token, chainIcon, onToggle, onSend, onPress, toggling, theme }) => {
+    const { COLORS } = theme;
+    const styles = rowStyles(theme);
+    const [imgErr, setImgErr] = useState(false);
+    const logo = token.logoURI || token.logo;
+    const priceChange = token.price?.usd_24h_change;
+    const isPositive = priceChange > 0;
+    const isNegative = priceChange < 0;
+    const hasBalance = parseFloat(token.balance?.formatted || "0") > 0;
+
+    return (
+      <TouchableOpacity
+        activeOpacity={0.7}
+        onPress={() => onPress(token)}
+        style={[styles.card, { backgroundColor: COLORS.surface, borderColor: COLORS.border }]}
+      >
+        <View style={styles.row}>
+          <View style={styles.left}>
+            <View style={styles.iconWrap}>
+              {logo && !imgErr ? (
+                <Image source={{ uri: logo }} style={styles.icon} onError={() => setImgErr(true)} />
+              ) : (
+                <View style={[styles.iconFallback, { backgroundColor: COLORS.primary + "20" }]}>
+                  <Text style={[styles.iconFallbackText, { color: COLORS.primary }]}>
+                    {token.symbol?.slice(0, 2).toUpperCase()}
+                  </Text>
+                </View>
+              )}
+              {!token.isNative && (
+                <ChainBadge uri={chainIcon} borderColor={COLORS.surface} />
+              )}
+            </View>
+
+            <View style={styles.info}>
+              <View style={styles.nameRow}>
+                <Text style={[styles.symbol, { color: COLORS.text }]} numberOfLines={1}>
+                  {token.symbol}
+                </Text>
+                {token.isNative && (
+                  <View style={[styles.badge, { backgroundColor: COLORS.primary + "18" }]}>
+                    <Text style={[styles.badgeText, { color: COLORS.primary }]}>NATIVE</Text>
+                  </View>
+                )}
+                {priceChange != null && (
+                  <View
+                    style={[
+                      styles.changeChip,
+                      { backgroundColor: isPositive ? "#E8F5E9" : isNegative ? "#FFEBEE" : COLORS.border },
+                    ]}
+                  >
+                    <Text
+                      style={[
+                        styles.changeText,
+                        { color: isPositive ? "#2E7D32" : isNegative ? "#C62828" : COLORS.textSecondary },
+                      ]}
+                    >
+                      {isPositive ? "+" : ""}
+                      {priceChange.toFixed(1)}%
+                    </Text>
+                  </View>
+                )}
+              </View>
+              <Text style={[styles.name, { color: COLORS.textSecondary }]} numberOfLines={1}>
+                {token.name}
+              </Text>
+              {hasBalance && (
+                <Text style={[styles.balanceLine, { color: COLORS.textTertiary }]}>
+                  {formatNumber(token.balance.formatted)} {token.symbol}
+                  {token.usdValue > 0 ? `  ·  ${formatCurrency(token.usdValue)}` : ""}
+                </Text>
+              )}
+            </View>
+          </View>
+
+          <View style={styles.right}>
+            {hasBalance && (
+              <TouchableOpacity
+                onPress={(e) => {
+                  e.stopPropagation();
+                  onSend(token);
+                }}
+                style={[styles.sendBtn, { backgroundColor: COLORS.primary + "15" }]}
+              >
+                <Ionicons name="paper-plane" size={13} color={COLORS.primary} />
+              </TouchableOpacity>
+            )}
+            {token.isNative ? (
+              <View style={styles.alwaysOnPill}>
+                <Ionicons name="lock-closed" size={11} color={COLORS.textTertiary} />
+              </View>
+            ) : toggling ? (
+              <ActivityIndicator size="small" color={COLORS.primary} />
+            ) : (
+              <Switch
+                value={token.enabled}
+                onValueChange={() => onToggle(token)}
+                trackColor={{ false: COLORS.disabled, true: COLORS.primary + "60" }}
+                thumbColor={token.enabled ? COLORS.primary : COLORS.textTertiary}
+                ios_backgroundColor={COLORS.disabled}
+              />
+            )}
+          </View>
+        </View>
+      </TouchableOpacity>
+    );
+  },
+);
+
+// ─── Screen ───────────────────────────────────────────────────────────────────
 
 const TokensScreen = ({ navigation }) => {
   const theme = useTheme();
   const styles = createStyles(theme);
-  const { wallet, provider } = useWallet();
-  const { activeChain, chainId } = useChain();
+  const { wallet } = useWallet();
+  const { activeChain } = useChain();
 
-  const [allTokens, setAllTokens] = useState([]);
-  const [displayTokens, setDisplayTokens] = useState([]);
-  const [loading, setLoading] = useState(false);
+  const [catalog, setCatalog] = useState([]);
+  const [enabledAddresses, setEnabledAddresses] = useState(new Set());
+  const [balancesByAddr, setBalancesByAddr] = useState({});
+  const [pricesByAddr, setPricesByAddr] = useState({});
+  const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
-  const [portfolioValue, setPortfolioValue] = useState(0);
-  const [loadProgress, setLoadProgress] = useState(0);
+  const [query, setQuery] = useState("");
+  const [togglingAddr, setTogglingAddr] = useState(null);
+  const [errorBanner, setErrorBanner] = useState(null);
 
   const loadingRef = useRef(false);
 
   useEffect(() => {
-    if (wallet?.address && activeChain && provider) {
-      loadTokens();
-    }
-  }, [activeChain, chainId, wallet?.address, provider]);
+    if (wallet?.address && activeChain) load();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [wallet?.address, activeChain?.id]);
 
-  /**
-   * Get cache key for current chain and user
-   */
-  const getCacheKey = (type) => {
-    return `${type}${activeChain.id}_${wallet?.address?.toLowerCase()}`;
-  };
+  const load = useCallback(async (forceRefresh = false) => {
+    if (loadingRef.current) return;
+    loadingRef.current = true;
+    setLoading(true);
+    setErrorBanner(null);
 
-  /**
-   * Load cached token metadata
-   */
-  const loadCachedMetadata = async () => {
     try {
-      const cacheKey = getCacheKey(CACHE_KEYS.TOKEN_METADATA);
-      const timestampKey = getCacheKey(CACHE_KEYS.CACHE_TIMESTAMP);
+      const userAddress = wallet.address.toLowerCase();
+      const chainId = parseInt(activeChain.id);
 
-      const [cachedData, timestamp] = await Promise.all([
-        AsyncStorage.getItem(cacheKey),
-        AsyncStorage.getItem(timestampKey),
+      // ── 1. Catalog + enabled set, in parallel ──────────────────────────────
+      const [catalogRes, enabledSet] = await Promise.all([
+        apiGet("/swap/tokens", {
+          params: { chainId },
+          ttl: forceRefresh ? 0 : TTL.API_TOKEN_CATALOG,
+        }),
+        getEnabledAddressSet(userAddress, chainId),
+      ]);
+      const tokens = catalogRes.data.tokens;
+      setCatalog(tokens);
+      setEnabledAddresses(enabledSet);
+
+      // ── 2. Balances: native separately, everything else in ONE Multicall ──
+      const erc20Tokens = tokens.filter((t) => !t.isNative);
+      const nativeToken = tokens.find((t) => t.isNative);
+
+      const [nativeBal, balanceMap] = await Promise.all([
+        nativeToken
+          ? getNativeBalance(wallet.address, activeChain).catch(() => null)
+          : Promise.resolve(null),
+        erc20Tokens.length
+          ? batchGetTokenBalances(
+              wallet.address,
+              erc20Tokens.map((t) => t.address),
+              activeChain,
+            ).catch(() => new Map())
+          : Promise.resolve(new Map()),
       ]);
 
-      if (!cachedData || !timestamp) return null;
-
-      const cacheAge = Date.now() - parseInt(timestamp);
-      if (cacheAge > METADATA_CACHE_DURATION) {
-        return null;
+      const balMap = {};
+      if (nativeToken && nativeBal) balMap[NATIVE_TOKEN_ADDRESS.toLowerCase()] = nativeBal;
+      for (const [addr, wei] of balanceMap) {
+        const t = erc20Tokens.find((x) => x.address.toLowerCase() === addr);
+        if (!t) continue;
+        balMap[addr] = { formatted: formatUnits(wei, t.decimals), wei: wei.toString() };
       }
+      setBalancesByAddr(balMap);
 
-      return JSON.parse(cachedData);
-    } catch (error) {
-      console.error("[TokensScreen] Error loading cache:", error);
-      return null;
-    }
-  };
-
-  /**
-   * Save token metadata to cache
-   */
-  const saveCachedMetadata = async (tokens) => {
-    try {
-      const cacheKey = getCacheKey(CACHE_KEYS.TOKEN_METADATA);
-      const timestampKey = getCacheKey(CACHE_KEYS.CACHE_TIMESTAMP);
-
-      const metadataOnly = tokens.map((token) => ({
-        address: token.address,
-        name: token.name,
-        symbol: token.symbol,
-        decimals: token.decimals,
-        logoURI: token.logoURI,
-        logo: token.logo,
-        id: token.id,
-        isCustom: !!token.id,
-      }));
-
-      await Promise.all([
-        AsyncStorage.setItem(cacheKey, JSON.stringify(metadataOnly)),
-        AsyncStorage.setItem(timestampKey, Date.now().toString()),
-      ]);
-    } catch (error) {
-      console.error("[TokensScreen] Error saving cache:", error);
-    }
-  };
-
-  /**
-   * Merge and deduplicate tokens
-   */
-  const mergeTokens = (customTokens, baseTokens) => {
-    const tokenMap = new Map();
-
-    customTokens.forEach((token) => {
-      const key = token.address.toLowerCase();
-      tokenMap.set(key, {
-        ...token,
-        isCustom: true,
-        id: token.id,
+      // Auto-enable any token the user actually holds but hasn't explicitly
+      // toggled yet, so a real balance never silently disappears from the
+      // portfolio just because it wasn't manually enabled first.
+      const holdingsNotEnabled = erc20Tokens.filter((t) => {
+        const bal = balMap[t.address.toLowerCase()];
+        return bal && parseFloat(bal.formatted) > 0 && !enabledSet.has(t.address.toLowerCase());
       });
-    });
-
-    baseTokens.forEach((token) => {
-      const key = token.address.toLowerCase();
-      if (!tokenMap.has(key)) {
-        tokenMap.set(key, {
-          ...token,
-          isCustom: false,
-          id: null,
+      if (holdingsNotEnabled.length) {
+        await Promise.all(
+          holdingsNotEnabled.map((t) => enableToken(userAddress, chainId, t)),
+        );
+        setEnabledAddresses((prev) => {
+          const next = new Set(prev);
+          holdingsNotEnabled.forEach((t) => next.add(t.address.toLowerCase()));
+          return next;
         });
       }
-    });
 
-    return Array.from(tokenMap.values());
-  };
+      // ── 3. Prices — capped, and only for tokens with a balance or already enabled ──
+      const priceCandidates = erc20Tokens
+        .filter((t) => {
+          const bal = balMap[t.address.toLowerCase()];
+          return (bal && parseFloat(bal.formatted) > 0) || enabledSet.has(t.address.toLowerCase());
+        })
+        .slice(0, MAX_PRICE_FETCHES);
 
-  /**
-   * Auto-save tokens with balance to database
-   */
-  const autoSaveTokensWithBalance = async (tokens, userAddress, chainId) => {
-    try {
-      const tokensToSave = tokens.filter(
-        (token) =>
-          !token.isCustom &&
-          token.hasBalance &&
-          parseFloat(token.balance?.formatted || "0") > 0,
-      );
-
-      if (tokensToSave.length === 0) return;
-
-      console.log(
-        `[TokensScreen] Auto-saving ${tokensToSave.length} tokens with balance`,
-      );
-
-      for (const token of tokensToSave) {
-        try {
-          const tokenData = {
-            address: token.address.toLowerCase(),
-            name: token.name,
-            symbol: token.symbol,
-            decimals: token.decimals,
-            logo: token.logoURI || token.logo,
-          };
-
-          await saveToken(userAddress, chainId, tokenData);
-        } catch (err) {
-          if (!err.message?.includes("UNIQUE constraint")) {
-            console.error(`[TokensScreen] Error saving ${token.symbol}:`, err);
+      const priceResults = await Promise.all(
+        priceCandidates.map(async (t) => {
+          try {
+            const price =
+              (await coinGeckoService.getTokenPrice(t.address, chainId)) ??
+              (await coinGeckoService.getTokenPrice(t.symbol, chainId));
+            return [t.address.toLowerCase(), price];
+          } catch {
+            return [t.address.toLowerCase(), null];
           }
-        }
-      }
-    } catch (error) {
-      console.error(
-        "[TokensScreen] Error in autoSaveTokensWithBalance:",
-        error,
+        }),
       );
-    }
-  };
-
-  const loadTokens = async (forceRefresh = false) => {
-    if (loadingRef.current) return;
-
-    try {
-      loadingRef.current = true;
-      setLoading(true);
-      setLoadProgress(0);
-
-      const userAddress = wallet.address.toLowerCase();
-      const normalizedChainId = parseInt(activeChain.id);
-
-      console.log(
-        "[TokensScreen] 🔄 Loading tokens for chain:",
-        normalizedChainId,
-        activeChain.name,
-      );
-
-      let allCombinedTokens = [];
-
-      if (!forceRefresh) {
-        const cachedMetadata = await loadCachedMetadata();
-        if (cachedMetadata) {
-          console.log(
-            "[TokensScreen] 📦 Using cached metadata:",
-            cachedMetadata.length,
-          );
-          allCombinedTokens = cachedMetadata;
-          setAllTokens(cachedMetadata);
-          setDisplayTokens(cachedMetadata);
-          setLoadProgress(10);
-        }
-      }
-
-      const [customTokens, baseTokens] = await Promise.all([
-        getTokensByChain(userAddress, normalizedChainId),
-        Promise.resolve(tokenList.getTokensByChain(normalizedChainId)),
-      ]);
-
-      console.log("[TokensScreen] 📦 Custom tokens:", customTokens.length);
-      console.log("[TokensScreen] 📦 Base tokens:", baseTokens.length);
-
-      const mergedTokens = mergeTokens(customTokens, baseTokens);
-      console.log(
-        "[TokensScreen] 📦 Total unique tokens:",
-        mergedTokens.length,
-      );
-
-      if (!forceRefresh) {
-        await saveCachedMetadata(mergedTokens);
-      }
-
-      await loadTokensInBatches(mergedTokens, userAddress, normalizedChainId);
-    } catch (error) {
-      console.error("[TokensScreen] ❌ Error:", error.message);
-      Alert.alert("Error", `Failed to load tokens: ${error.message}`);
+      setPricesByAddr(Object.fromEntries(priceResults.filter(([, p]) => p)));
+    } catch (err) {
+      const humanized = humanizeError(err, { fallbackTitle: "Couldn't Load Tokens" });
+      setErrorBanner(humanized);
     } finally {
       setLoading(false);
       loadingRef.current = false;
     }
-  };
-
-  const loadTokensInBatches = async (tokens, userAddress, chainId) => {
-    const BATCH_SIZE = 20;
-    const PRICE_DELAY = 100;
-
-    if (!provider) {
-      throw new Error("Provider not available");
-    }
-
-    let processedTokens = [];
-    let totalValue = 0;
-    let pricesFetched = 0;
-    const MAX_PRICE_FETCHES = 50;
-
-    for (let i = 0; i < tokens.length; i += BATCH_SIZE) {
-      const batch = tokens.slice(i, i + BATCH_SIZE);
-      const progress = ((i + batch.length) / tokens.length) * 100;
-      setLoadProgress(progress);
-
-      const batchResults = await Promise.all(
-        batch.map(async (token) => {
-          try {
-            // Get balance
-            const balance = await getTokenBalance(
-              token.address,
-              userAddress,
-              token.decimals,
-              provider,
-            );
-
-            const hasBalance = balance && parseFloat(balance.formatted) > 0;
-
-            // Get price - with rate limiting
-            let price = null;
-            if (pricesFetched < MAX_PRICE_FETCHES) {
-              try {
-                // Try contract address first for ERC20 tokens
-                price = await coinGeckoService.getTokenPrice(
-                  token.address,
-                  chainId,
-                );
-
-                // If contract address fails, try symbol
-                if (!price) {
-                  price = await coinGeckoService.getTokenPrice(
-                    token.symbol,
-                    chainId,
-                  );
-                }
-
-                pricesFetched++;
-
-                await new Promise((resolve) =>
-                  setTimeout(resolve, PRICE_DELAY),
-                );
-              } catch (priceError) {
-                console.warn(
-                  `[TokensScreen] Price fetch failed for ${token.symbol}:`,
-                  priceError.message,
-                );
-                price = null;
-              }
-            }
-
-            const usdValue =
-              hasBalance && price?.usd
-                ? parseFloat(balance.formatted) * price.usd
-                : 0;
-
-            if (usdValue > 0) {
-              totalValue += usdValue;
-            }
-
-            return {
-              ...token,
-              balance,
-              price,
-              hasBalance,
-              usdValue,
-            };
-          } catch (error) {
-            console.error(`Error loading ${token.symbol}:`, error.message);
-            return {
-              ...token,
-              balance: null,
-              price: null,
-              hasBalance: false,
-              usdValue: 0,
-            };
-          }
-        }),
-      );
-
-      processedTokens = [...processedTokens, ...batchResults];
-      const sorted = sortTokens(processedTokens);
-
-      setAllTokens(sorted);
-      setDisplayTokens(sorted);
-      setPortfolioValue(totalValue);
-    }
-
-    await autoSaveTokensWithBalance(processedTokens, userAddress, chainId);
-
-    setLoadProgress(100);
-
-    console.log(
-      `[TokensScreen] ✅ Loaded ${processedTokens.length} tokens, fetched ${pricesFetched} prices`,
-    );
-  };
-
-  const getTokenBalance = async (
-    tokenAddress,
-    userAddress,
-    decimals,
-    provider,
-  ) => {
-    try {
-      // Native token
-      if (
-        tokenAddress === "0x0000000000000000000000000000000000000000" ||
-        tokenAddress === ZeroAddress
-      ) {
-        const balance = await provider.getBalance(userAddress);
-        const formatted = formatUnits(balance, decimals);
-        return {
-          raw: balance.toString(),
-          formatted: formatted,
-          decimals: decimals,
-        };
-      }
-
-      // ERC20 token
-      const tokenContract = new Contract(
-        tokenAddress,
-        [
-          "function balanceOf(address owner) view returns (uint256)",
-          "function decimals() view returns (uint8)",
-        ],
-        provider,
-      );
-
-      const balance = await tokenContract.balanceOf(userAddress);
-      const formatted = formatUnits(balance, decimals);
-
-      return {
-        raw: balance.toString(),
-        formatted: formatted,
-        decimals: decimals,
-      };
-    } catch (error) {
-      console.error(
-        `Error getting balance for ${tokenAddress}:`,
-        error.message,
-      );
-      return null;
-    }
-  };
-
-  const sortTokens = (tokens) => {
-    return tokens.sort((a, b) => {
-      // Custom tokens with balance first
-      if (a.isCustom && a.hasBalance && !(b.isCustom && b.hasBalance))
-        return -1;
-      if (!(a.isCustom && a.hasBalance) && b.isCustom && b.hasBalance) return 1;
-
-      // Then by balance
-      if (a.hasBalance && !b.hasBalance) return -1;
-      if (!a.hasBalance && b.hasBalance) return 1;
-
-      // Then by USD value
-      const aValue = a.usdValue || 0;
-      const bValue = b.usdValue || 0;
-
-      return bValue - aValue;
-    });
-  };
+  }, [wallet?.address, activeChain]);
 
   const onRefresh = useCallback(async () => {
     setRefreshing(true);
-    coinGeckoService.clearCache();
-    setPortfolioValue(0);
-    await loadTokens(true);
+    await load(true);
     setRefreshing(false);
-  }, []);
+  }, [load]);
+
+  // ── Toggle enable/disable ───────────────────────────────────────────────────
+  const handleToggle = useCallback(
+    async (token) => {
+      const addr = token.address.toLowerCase();
+      const userAddress = wallet.address.toLowerCase();
+      const chainId = parseInt(activeChain.id);
+      const willEnable = !enabledAddresses.has(addr);
+
+      setTogglingAddr(addr);
+      try {
+        if (willEnable) {
+          await enableToken(userAddress, chainId, token);
+        } else {
+          await disableToken(userAddress, chainId, addr);
+        }
+        setEnabledAddresses((prev) => {
+          const next = new Set(prev);
+          willEnable ? next.add(addr) : next.delete(addr);
+          return next;
+        });
+      } catch (err) {
+        const humanized = humanizeError(err, { fallbackTitle: "Couldn't Update Token" });
+        Alert.alert(humanized.title, humanized.message);
+      } finally {
+        setTogglingAddr(null);
+      }
+    },
+    [wallet?.address, activeChain?.id, enabledAddresses],
+  );
+
+  // ── Rows ready for render ───────────────────────────────────────────────────
+  const rows = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    return catalog
+      .filter((t) => {
+        if (!q) return true;
+        return t.symbol.toLowerCase().includes(q) || t.name.toLowerCase().includes(q);
+      })
+      .map((t) => {
+        const addr = t.address.toLowerCase();
+        const balance = balancesByAddr[addr] ?? null;
+        const price = pricesByAddr[addr] ?? null;
+        const usdValue =
+          balance && price?.usd ? parseFloat(balance.formatted) * price.usd : 0;
+        return {
+          ...t,
+          balance,
+          price,
+          usdValue,
+          enabled: t.isNative ? true : enabledAddresses.has(addr),
+        };
+      })
+      .sort((a, b) => {
+        if (a.isNative) return -1;
+        if (b.isNative) return 1;
+        if (a.enabled !== b.enabled) return a.enabled ? -1 : 1;
+        return (b.usdValue ?? 0) - (a.usdValue ?? 0);
+      });
+  }, [catalog, balancesByAddr, pricesByAddr, enabledAddresses, query]);
+
+  const enabledCount = rows.filter((r) => r.enabled && !r.isNative).length;
 
   const handleTokenPress = (token) => {
-    if (!token.balance) return;
-
-    const usdValue = token.usdValue || 0;
-
-    // Pass comprehensive token data to TokenDetailScreen
+    if (!token.balance || parseFloat(token.balance.formatted) === 0) return;
     navigation.navigate("TokenDetail", {
       token: {
         address: token.address,
@@ -447,7 +382,7 @@ const TokensScreen = ({ navigation }) => {
         name: token.name,
         decimals: token.decimals,
         logoURI: token.logoURI || token.logo,
-        isCustom: token.isCustom,
+        isCustom: false,
       },
       chain: {
         id: activeChain.id,
@@ -455,8 +390,8 @@ const TokensScreen = ({ navigation }) => {
         symbol: activeChain.symbol,
         icon: activeChain.icon,
       },
-      balance: token.balance.formatted || "0",
-      usdValue: usdValue,
+      balance: token.balance.formatted,
+      usdValue: token.usdValue,
       price: token.price?.usd || 0,
       priceChange24h: token.price?.usd_24h_change,
       walletAddress: wallet.address,
@@ -464,304 +399,105 @@ const TokensScreen = ({ navigation }) => {
     });
   };
 
-  const handleSendToken = (token, event) => {
-    event.stopPropagation();
-
-    if (!token.hasBalance) {
-      Alert.alert("No Balance", "You don't have any of this token to send.");
-      return;
-    }
-
+  const handleSendToken = (token) => {
     navigation.navigate("Send", {
-      token: {
-        ...token,
-        balance: token.balance?.formatted || "0",
-      },
+      token: { ...token, balance: token.balance?.formatted || "0" },
       chain: activeChain,
     });
   };
-
-  const handleRemoveToken = (token, event) => {
-    event.stopPropagation();
-
-    if (!token.isCustom) {
-      Alert.alert(
-        "Cannot Remove",
-        "Only custom imported tokens can be removed from the list.",
-      );
-      return;
-    }
-
-    Alert.alert(
-      "Remove Token",
-      `Remove ${token.symbol} from your list?\n\nYour tokens will remain safe in your wallet.`,
-      [
-        { text: "Cancel", style: "cancel" },
-        {
-          text: "Remove",
-          style: "destructive",
-          onPress: async () => {
-            try {
-              await deleteToken(token.id);
-              await loadTokens(true);
-            } catch (error) {
-              Alert.alert("Error", "Failed to remove token");
-            }
-          },
-        },
-      ],
-    );
-  };
-
-  const formatNumber = (num, decimals = 2) => {
-    if (!num || num === 0) return "0";
-    if (num < 0.000001) return "< 0.000001";
-    if (num < 0.01) return num.toFixed(6);
-    if (num < 1) return num.toFixed(4);
-    if (num < 1000) return num.toFixed(decimals);
-    if (num < 1000000)
-      return num.toLocaleString("en-US", { maximumFractionDigits: decimals });
-    if (num < 1000000000) return `${(num / 1000000).toFixed(2)}M`;
-    return `${(num / 1000000000).toFixed(2)}B`;
-  };
-
-  const formatCurrency = (value) => {
-    if (!value || value === 0) return "$0.00";
-    if (value < 0.01) return "< $0.01";
-    if (value < 1000) return `$${value.toFixed(2)}`;
-    if (value < 1000000)
-      return `$${value.toLocaleString("en-US", { maximumFractionDigits: 2 })}`;
-    if (value < 1000000000) return `$${(value / 1000000).toFixed(2)}M`;
-    return `$${(value / 1000000000).toFixed(2)}B`;
-  };
-
-  const renderToken = ({ item, index }) => {
-    const balance = item.balance;
-    const price = item.price;
-    const hasBalance = item.hasBalance;
-    const priceChange = price?.usd_24h_change;
-    const isPositive = priceChange && priceChange > 0;
-    const isNegative = priceChange && priceChange < 0;
-    const usdValue = item.usdValue || 0;
-
-    return (
-      <TouchableOpacity
-        activeOpacity={0.7}
-        onPress={() => handleTokenPress(item)}
-        style={styles.tokenCard}
-      >
-        <View style={styles.tokenRow}>
-          <View style={styles.tokenLeft}>
-            <View style={styles.tokenIconContainer}>
-              {item.logoURI || item.logo ? (
-                <Image
-                  source={{ uri: item.logoURI || item.logo }}
-                  style={styles.tokenIcon}
-                />
-              ) : (
-                <View
-                  style={[
-                    styles.tokenIconFallback,
-                    { backgroundColor: theme.COLORS.primary + "20" },
-                  ]}
-                >
-                  <Text
-                    style={[
-                      styles.tokenIconText,
-                      { color: theme.COLORS.primary },
-                    ]}
-                  >
-                    {item.symbol.substring(0, 2).toUpperCase()}
-                  </Text>
-                </View>
-              )}
-              {item.isCustom && <View style={styles.customBadge} />}
-            </View>
-
-            <View style={styles.tokenInfo}>
-              <View style={styles.tokenNameRow}>
-                <Text style={styles.tokenSymbol} numberOfLines={1}>
-                  {item.symbol}
-                </Text>
-                {priceChange !== undefined && priceChange !== null && (
-                  <View
-                    style={[
-                      styles.changeChip,
-                      {
-                        backgroundColor: isPositive
-                          ? "#E8F5E9"
-                          : isNegative
-                            ? "#FFEBEE"
-                            : "#F5F5F5",
-                      },
-                    ]}
-                  >
-                    <Ionicons
-                      name={
-                        isPositive
-                          ? "trending-up"
-                          : isNegative
-                            ? "trending-down"
-                            : "remove"
-                      }
-                      size={10}
-                      color={
-                        isPositive
-                          ? "#2E7D32"
-                          : isNegative
-                            ? "#C62828"
-                            : "#757575"
-                      }
-                    />
-                    <Text
-                      style={[
-                        styles.changeText,
-                        {
-                          color: isPositive
-                            ? "#2E7D32"
-                            : isNegative
-                              ? "#C62828"
-                              : "#757575",
-                        },
-                      ]}
-                    >
-                      {Math.abs(priceChange).toFixed(2)}%
-                    </Text>
-                  </View>
-                )}
-              </View>
-              <Text style={styles.tokenName} numberOfLines={1}>
-                {item.name}
-              </Text>
-              {price && price.usd ? (
-                <Text style={styles.tokenPrice}>
-                  ${formatNumber(price.usd, 6)}
-                </Text>
-              ) : (
-                <Text style={[styles.tokenPrice, styles.noPriceText]}>
-                  $0.00
-                </Text>
-              )}
-            </View>
-          </View>
-
-          <View style={styles.tokenRight}>
-            <Text
-              style={[styles.balanceAmount, hasBalance && styles.balanceActive]}
-              numberOfLines={1}
-            >
-              {balance
-                ? formatNumber(parseFloat(balance.formatted || "0"), 4)
-                : "..."}
-            </Text>
-            {usdValue > 0 && (
-              <Text style={styles.balanceUSD}>{formatCurrency(usdValue)}</Text>
-            )}
-
-            <View style={styles.quickActions}>
-              <TouchableOpacity
-                onPress={(e) => handleSendToken(item, e)}
-                disabled={!hasBalance}
-                style={[
-                  styles.quickActionBtn,
-                  !hasBalance && styles.quickActionDisabled,
-                ]}
-              >
-                <Ionicons
-                  name="paper-plane"
-                  size={12}
-                  color={
-                    hasBalance
-                      ? theme.COLORS.primary
-                      : theme.COLORS.textSecondary
-                  }
-                />
-              </TouchableOpacity>
-              {item.isCustom && (
-                <TouchableOpacity
-                  onPress={(e) => handleRemoveToken(item, e)}
-                  style={styles.quickActionBtn}
-                >
-                  <Ionicons
-                    name="trash-outline"
-                    size={12}
-                    color={theme.COLORS.error}
-                  />
-                </TouchableOpacity>
-              )}
-            </View>
-          </View>
-        </View>
-      </TouchableOpacity>
-    );
-  };
-
-  const renderEmpty = () => (
-    <View style={styles.emptyContainer}>
-      <View style={styles.emptyIconContainer}>
-        <Ionicons
-          name="wallet-outline"
-          size={64}
-          color={theme.COLORS.textSecondary}
-        />
-      </View>
-      <Text style={styles.emptyTitle}>No Tokens Yet</Text>
-      <Text style={styles.emptySubtitle}>
-        Import custom tokens or switch{"\n"}to a different network
-      </Text>
-      <Button
-        title="Import Token"
-        onPress={() => navigation.navigate("TokenImport")}
-        variant="primary"
-        size="medium"
-        style={styles.emptyButton}
-      />
-    </View>
-  );
 
   return (
     <View style={styles.container}>
       <View style={styles.header}>
         <View style={styles.headerLeft}>
-          <TouchableOpacity
-            style={styles.backButton}
-            onPress={() => navigation.goBack()}
-          >
-            <Ionicons name="arrow-back" size={24} color={theme.COLORS.text} />
+          <TouchableOpacity style={styles.backButton} onPress={() => navigation.goBack()}>
+            <Ionicons name="arrow-back" size={22} color={theme.COLORS.text} />
           </TouchableOpacity>
           <View>
-            <Text style={styles.headerTitle}>Tokens</Text>
-            <Text style={styles.headerSubtitle}>Manage your tokens</Text>
+            <Text style={styles.headerTitle}>Manage Tokens</Text>
+            <Text style={styles.headerSubtitle}>
+              {activeChain.name} · {enabledCount} enabled
+            </Text>
           </View>
         </View>
-        <TouchableOpacity
-          style={styles.addButton}
-          onPress={() => navigation.navigate("TokenImport")}
-        >
-          <Ionicons name="add" size={24} color="#FFF" />
+        <TouchableOpacity style={styles.addButton} onPress={() => navigation.navigate("TokenImport")}>
+          <Ionicons name="add" size={22} color="#FFF" />
         </TouchableOpacity>
       </View>
 
-      {loading && displayTokens.length === 0 ? (
+      <View style={[styles.searchWrap, { backgroundColor: theme.COLORS.surface, borderColor: theme.COLORS.border }]}>
+        <Ionicons name="search-outline" size={16} color={theme.COLORS.textTertiary} />
+        <TextInput
+          value={query}
+          onChangeText={setQuery}
+          placeholder="Search tokens"
+          placeholderTextColor={theme.COLORS.textTertiary}
+          style={[styles.searchInput, { color: theme.COLORS.text }]}
+          autoCorrect={false}
+        />
+        {query.length > 0 && (
+          <TouchableOpacity onPress={() => setQuery("")}>
+            <Ionicons name="close-circle" size={16} color={theme.COLORS.textTertiary} />
+          </TouchableOpacity>
+        )}
+      </View>
+
+      {errorBanner && (
+        <View style={[styles.errorBanner, { backgroundColor: theme.COLORS.error + "12", borderColor: theme.COLORS.error + "40" }]}>
+          <Ionicons name="alert-circle-outline" size={16} color={theme.COLORS.error} />
+          <View style={{ flex: 1 }}>
+            <Text style={[styles.errorTitle, { color: theme.COLORS.error }]}>{errorBanner.title}</Text>
+            <Text style={[styles.errorMessage, { color: theme.COLORS.textSecondary }]}>
+              {errorBanner.message}
+            </Text>
+          </View>
+          <TouchableOpacity onPress={() => load(true)}>
+            <Ionicons name="refresh" size={18} color={theme.COLORS.error} />
+          </TouchableOpacity>
+        </View>
+      )}
+
+      {loading && rows.length === 0 ? (
         <View style={styles.loadingContainer}>
           <ActivityIndicator size="large" color={theme.COLORS.primary} />
-          <Text style={styles.loadingText}>Loading your tokens...</Text>
+          <Text style={styles.loadingText}>Loading tokens…</Text>
         </View>
       ) : (
         <FlatList
-          data={displayTokens}
-          renderItem={renderToken}
-          keyExtractor={(item, index) =>
-            `${item.address.toLowerCase()}-${activeChain.id}-${index}`
-          }
-          contentContainerStyle={styles.listContent}
-          ListEmptyComponent={renderEmpty}
-          refreshControl={
-            <RefreshControl
-              refreshing={refreshing}
-              onRefresh={onRefresh}
-              tintColor={theme.COLORS.primary}
+          data={rows}
+          renderItem={({ item }) => (
+            <TokenRow
+              token={item}
+              chainIcon={activeChain.icon}
+              onToggle={handleToggle}
+              onSend={handleSendToken}
+              onPress={handleTokenPress}
+              toggling={togglingAddr === item.address.toLowerCase()}
+              theme={theme}
             />
+          )}
+          keyExtractor={(item) => `${item.address.toLowerCase()}-${activeChain.id}`}
+          contentContainerStyle={styles.listContent}
+          ListEmptyComponent={
+            <View style={styles.emptyContainer}>
+              <View style={[styles.emptyIconContainer, { backgroundColor: theme.COLORS.border }]}>
+                <Ionicons name="search-outline" size={48} color={theme.COLORS.textSecondary} />
+              </View>
+              <Text style={styles.emptyTitle}>No tokens found</Text>
+              <Text style={styles.emptySubtitle}>
+                Try a different search, or import a token by contract address
+              </Text>
+              <Button
+                title="Import Token"
+                onPress={() => navigation.navigate("TokenImport")}
+                variant="primary"
+                size="medium"
+                style={styles.emptyButton}
+              />
+            </View>
+          }
+          refreshControl={
+            <RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={theme.COLORS.primary} />
           }
           showsVerticalScrollIndicator={false}
         />
@@ -770,29 +506,23 @@ const TokensScreen = ({ navigation }) => {
   );
 };
 
+// ─── Styles ───────────────────────────────────────────────────────────────────
+
 const createStyles = (theme) =>
   StyleSheet.create({
-    container: {
-      flex: 1,
-      backgroundColor: theme.COLORS.background,
-    },
+    container: { flex: 1, backgroundColor: theme.COLORS.background },
     header: {
       flexDirection: "row",
       justifyContent: "space-between",
       alignItems: "center",
       paddingHorizontal: 20,
       paddingTop: 16,
-      paddingBottom: 16,
+      paddingBottom: 12,
       backgroundColor: theme.COLORS.background,
       borderBottomWidth: 1,
       borderBottomColor: theme.COLORS.border,
     },
-    headerLeft: {
-      flexDirection: "row",
-      alignItems: "center",
-      gap: 12,
-      flex: 1,
-    },
+    headerLeft: { flexDirection: "row", alignItems: "center", gap: 12, flex: 1 },
     backButton: {
       width: 40,
       height: 40,
@@ -801,21 +531,12 @@ const createStyles = (theme) =>
       justifyContent: "center",
       alignItems: "center",
     },
-    headerTitle: {
-      fontSize: 18,
-      fontWeight: "800",
-      color: theme.COLORS.text,
-      letterSpacing: -0.5,
-    },
-    headerSubtitle: {
-      fontSize: 13,
-      color: theme.COLORS.textSecondary,
-      marginTop: 2,
-    },
+    headerTitle: { fontSize: 18, fontWeight: "800", color: theme.COLORS.text, letterSpacing: -0.5 },
+    headerSubtitle: { fontSize: 13, color: theme.COLORS.textSecondary, marginTop: 2 },
     addButton: {
-      width: 48,
-      height: 48,
-      borderRadius: 24,
+      width: 44,
+      height: 44,
+      borderRadius: 22,
       backgroundColor: theme.COLORS.primary,
       justifyContent: "center",
       alignItems: "center",
@@ -825,183 +546,79 @@ const createStyles = (theme) =>
       shadowRadius: 8,
       elevation: 4,
     },
-    listContent: {
-      padding: 16,
-      paddingBottom: 32,
-    },
-    tokenCard: {
-      backgroundColor: theme.COLORS.surface,
-      borderRadius: 16,
-      marginBottom: 10,
-      borderWidth: 1,
-      borderColor: theme.COLORS.border,
-      overflow: "hidden",
-    },
-    tokenRow: {
+    searchWrap: {
       flexDirection: "row",
       alignItems: "center",
-      justifyContent: "space-between",
-      padding: 14,
-    },
-    tokenLeft: {
-      flexDirection: "row",
-      alignItems: "center",
-      flex: 1,
-      gap: 12,
-    },
-    tokenIconContainer: {
-      position: "relative",
-    },
-    tokenIcon: {
-      width: 44,
-      height: 44,
-      borderRadius: 22,
-    },
-    tokenIconFallback: {
-      width: 44,
-      height: 44,
-      borderRadius: 22,
-      justifyContent: "center",
-      alignItems: "center",
-    },
-    tokenIconText: {
-      fontSize: 16,
-      fontWeight: "700",
-    },
-    customBadge: {
-      position: "absolute",
-      top: -2,
-      right: -2,
-      width: 14,
-      height: 14,
-      borderRadius: 7,
-      backgroundColor: theme.COLORS.primary,
-      borderWidth: 2,
-      borderColor: theme.COLORS.surface,
-    },
-    tokenInfo: {
-      flex: 1,
-      gap: 2,
-    },
-    tokenNameRow: {
-      flexDirection: "row",
-      alignItems: "center",
-      gap: 6,
-      marginBottom: 2,
-    },
-    tokenSymbol: {
-      fontSize: 16,
-      fontWeight: "700",
-      color: theme.COLORS.text,
-      letterSpacing: 0.2,
-    },
-    changeChip: {
-      flexDirection: "row",
-      alignItems: "center",
-      paddingHorizontal: 6,
-      paddingVertical: 2,
-      borderRadius: 6,
-      gap: 3,
-    },
-    changeText: {
-      fontSize: 10,
-      fontWeight: "700",
-      letterSpacing: 0.2,
-    },
-    tokenName: {
-      fontSize: 12,
-      color: theme.COLORS.textSecondary,
-      fontWeight: "500",
-    },
-    tokenPrice: {
-      fontSize: 11,
-      color: theme.COLORS.textSecondary,
-      fontWeight: "600",
-      marginTop: 2,
-    },
-    noPriceText: {
-      fontStyle: "italic",
-      opacity: 0.7,
-    },
-    tokenRight: {
-      alignItems: "flex-end",
-      gap: 4,
-      minWidth: 100,
-    },
-    balanceAmount: {
-      fontSize: 15,
-      fontWeight: "700",
-      color: theme.COLORS.textSecondary,
-      letterSpacing: 0.2,
-    },
-    balanceActive: {
-      color: theme.COLORS.text,
-      fontSize: 16,
-    },
-    balanceUSD: {
-      fontSize: 11,
-      color: theme.COLORS.textSecondary,
-      fontWeight: "600",
-    },
-    quickActions: {
-      flexDirection: "row",
       gap: 8,
-      marginTop: 6,
+      marginHorizontal: 16,
+      marginTop: 12,
+      paddingHorizontal: 12,
+      paddingVertical: 10,
+      borderRadius: 12,
+      borderWidth: 1,
     },
-    quickActionBtn: {
-      width: 28,
-      height: 28,
-      borderRadius: 14,
-      backgroundColor: theme.COLORS.border,
-      justifyContent: "center",
+    searchInput: { flex: 1, fontSize: 14, padding: 0 },
+    errorBanner: {
+      flexDirection: "row",
       alignItems: "center",
+      gap: 10,
+      marginHorizontal: 16,
+      marginTop: 12,
+      padding: 12,
+      borderRadius: 12,
+      borderWidth: 1,
     },
-    quickActionDisabled: {
-      opacity: 0.4,
-    },
-    emptyContainer: {
-      alignItems: "center",
-      justifyContent: "center",
-      paddingVertical: 100,
-      paddingHorizontal: 40,
-    },
+    errorTitle: { fontSize: 13, fontWeight: "700" },
+    errorMessage: { fontSize: 12, marginTop: 1 },
+    listContent: { padding: 16, paddingBottom: 32, gap: 10 },
+    emptyContainer: { alignItems: "center", justifyContent: "center", paddingVertical: 80, paddingHorizontal: 40 },
     emptyIconContainer: {
-      width: 120,
-      height: 120,
-      borderRadius: 60,
-      backgroundColor: theme.COLORS.border,
+      width: 110,
+      height: 110,
+      borderRadius: 55,
       justifyContent: "center",
       alignItems: "center",
+      marginBottom: 20,
+    },
+    emptyTitle: { fontSize: 20, fontWeight: "800", color: theme.COLORS.text, marginBottom: 6, textAlign: "center" },
+    emptySubtitle: {
+      fontSize: 13,
+      color: theme.COLORS.textSecondary,
+      textAlign: "center",
+      lineHeight: 19,
       marginBottom: 24,
     },
-    emptyTitle: {
-      fontSize: 24,
-      fontWeight: "800",
-      color: theme.COLORS.text,
-      marginBottom: 8,
-      textAlign: "center",
-    },
-    emptySubtitle: {
-      fontSize: 14,
-      color: theme.COLORS.textSecondary,
-      textAlign: "center",
-      lineHeight: 20,
-      marginBottom: 32,
-    },
-    emptyButton: {
-      paddingHorizontal: 32,
-    },
-    loadingContainer: {
-      flex: 1,
+    emptyButton: { paddingHorizontal: 32 },
+    loadingContainer: { flex: 1, justifyContent: "center", alignItems: "center", paddingVertical: 100 },
+    loadingText: { marginTop: 16, fontSize: 14, color: theme.COLORS.textSecondary, fontWeight: "500" },
+  });
+
+const rowStyles = (theme) =>
+  StyleSheet.create({
+    card: { borderRadius: 16, borderWidth: 1, overflow: "hidden" },
+    row: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", padding: 14, gap: 10 },
+    left: { flexDirection: "row", alignItems: "center", flex: 1, gap: 12 },
+    iconWrap: { position: "relative" },
+    icon: { width: 40, height: 40, borderRadius: 20 },
+    iconFallback: { width: 40, height: 40, borderRadius: 20, justifyContent: "center", alignItems: "center" },
+    iconFallbackText: { fontSize: 14, fontWeight: "700" },
+    info: { flex: 1, gap: 2 },
+    nameRow: { flexDirection: "row", alignItems: "center", gap: 6, flexWrap: "wrap" },
+    symbol: { fontSize: 15, fontWeight: "700" },
+    badge: { paddingHorizontal: 6, paddingVertical: 2, borderRadius: 6 },
+    badgeText: { fontSize: 9, fontWeight: "800", letterSpacing: 0.3 },
+    changeChip: { paddingHorizontal: 6, paddingVertical: 2, borderRadius: 6 },
+    changeText: { fontSize: 10, fontWeight: "700" },
+    name: { fontSize: 12, fontWeight: "500" },
+    balanceLine: { fontSize: 11, fontWeight: "600", marginTop: 2 },
+    right: { flexDirection: "row", alignItems: "center", gap: 8 },
+    sendBtn: { width: 30, height: 30, borderRadius: 15, justifyContent: "center", alignItems: "center" },
+    alwaysOnPill: {
+      width: 30,
+      height: 30,
+      borderRadius: 15,
       justifyContent: "center",
       alignItems: "center",
-      paddingVertical: 100,
-    },
-    loadingText: {
-      marginTop: 16,
-      fontSize: 14,
-      color: theme.COLORS.textSecondary,
-      fontWeight: "500",
     },
   });
 
