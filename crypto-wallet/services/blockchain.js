@@ -201,7 +201,7 @@ export const getAllTokenBalances = async (address, chain) => {
 };
 
 /**
- * Send native token (ETH, MATIC, etc.)
+ * Send native token (ETH, POL, etc.)
  */
 export const sendNativeToken = async (privateKey, toAddress, amount, chain) => {
   try {

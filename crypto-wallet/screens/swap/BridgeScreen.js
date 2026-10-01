@@ -327,8 +327,8 @@ export default function BridgeScreen() {
     await refreshBalance(fromChain.id);
     setTimeout(() => {
       Alert.alert(
-        "Bridge submitted",
-        `Bridging ${amount} ${fromToken.symbol} from ${fromChain.name} to ${toChain.name}. This can take a few minutes to a few hours depending on the route.`,
+        "Cross-chain swap submitted",
+        `Moving ${amount} ${fromToken.symbol} from ${fromChain.name} to ${toChain.name}. This can take a few minutes to a few hours depending on the route.`,
         [{ text: "OK", onPress: resetForm }],
       );
     }, 500);
@@ -539,7 +539,7 @@ export default function BridgeScreen() {
             <ActivityIndicator size="small" color={isValid ? COLORS.background : COLORS.textTertiary} />
           ) : (
             <Text style={[styles.bridgeBtnText, { color: isValid ? COLORS.background : COLORS.textTertiary }]}>
-              Bridge {fromToken?.symbol}
+              Swap {fromToken?.symbol} cross-chain
             </Text>
           )}
         </TouchableOpacity>
@@ -571,7 +571,7 @@ export default function BridgeScreen() {
         onSelect={handleSelectFromChain}
         chains={mainnetChains}
         selectedChainId={fromChain?.id}
-        title="Bridge From"
+        title="From network"
       />
       <ChainPickerModal
         visible={showToChainPicker}
@@ -579,14 +579,14 @@ export default function BridgeScreen() {
         onSelect={handleSelectToChain}
         chains={mainnetChains}
         selectedChainId={toChain?.id}
-        title="Bridge To"
+        title="To network"
       />
 
       <BridgeTransactionModal
         visible={showTxModal}
         onClose={() => setShowTxModal(false)}
-        title="Confirm Bridge"
-        description={`Bridge ${amount} ${fromToken?.symbol} from ${fromChain?.name} to ${toChain?.name}`}
+        title="Confirm cross-chain swap"
+        description={`Swap ${amount} ${fromToken?.symbol} from ${fromChain?.name} to ${toChain?.name}`}
         quote={quote}
         chainSymbol={fromToken?.symbol}
         fromChainName={fromChain?.name}

@@ -161,7 +161,8 @@ const SwapScreen = () => {
       const nativeTokenIds = {
         ETH: "ethereum",
         BNB: "binancecoin",
-        MATIC: "matic-network",
+        POL: "polygon-ecosystem-token",
+        MATIC: "polygon-ecosystem-token",
         AVAX: "avalanche-2",
         FTM: "fantom",
         MNT: "mantle",

@@ -74,8 +74,11 @@ for (const [id, chains] of Object.entries(NATIVE_COINS)) {
 }
 
 // Trending tabs. Order here is the order the app renders them in.
+// "new" has no category — it's special-cased in buildTrending like "all",
+// sourced from /coins/list/new instead of a category filter.
 const TABS = [
   { key: "all", label: "All" },
+  { key: "new", label: "New Launch" },
   { key: "arc", label: "Arc", category: "arc-ecosystem", chainId: 5042 },
   {
     key: "robinhood",
@@ -85,12 +88,33 @@ const TABS = [
   },
   { key: "base", label: "Base", category: "base-ecosystem", chainId: 8453 },
   { key: "bnb", label: "BNB", category: "binance-smart-chain", chainId: 56 },
-  { key: "meme", label: "Meme", category: "meme-token" },
-  { key: "rwa", label: "RWA", category: "real-world-assets-rwa" },
+  {
+    key: "polygon",
+    label: "Polygon",
+    category: "polygon-ecosystem",
+    chainId: 137,
+  },
+  {
+    key: "arbitrum",
+    label: "Arbitrum",
+    category: "arbitrum-ecosystem",
+    chainId: 42161,
+  },
+  {
+    key: "avalanche",
+    label: "Avalanche",
+    category: "avalanche-ecosystem",
+    chainId: 43114,
+  },
+  { key: "meme", label: "Meme", category: "meme-token", count: 30 },
+  { key: "rwa", label: "RWA", category: "real-world-assets-rwa", count: 30 },
 ];
-const PER_TAB = 4;
-const ALL_TRENDING = 5;
-const ALL_RWA = 5;
+const PER_TAB = 25;
+// /search/trending only ever returns 15 coins total (a fixed CoinGecko
+// response size, not adjustable) — 15 is this one's real ceiling.
+const ALL_TRENDING = 15;
+const ALL_RWA = 20;
+const NEW_LAUNCH_COUNT = 40;
 
 // Filters that keep "trending" meaningful: stablecoins, wrapped/bridged
 // copies and dust-cap tokens dominate raw volume rankings otherwise.
@@ -263,7 +287,13 @@ const downsample = (arr, n) => {
   return Array.from({ length: n }, (_, i) => arr[Math.round(i * step)]);
 };
 
-const isListable = (c, stableIds) => {
+// A token only belongs on the Market screen if there's somewhere to actually
+// swap it — i.e. it (or a wrapped/bridged form, via chainsFor) is deployed on
+// at least one chain this wallet supports. Without this, tapping a token
+// with no supported deployment would have nowhere to deep-link to.
+const hasSupportedChain = (id, index) => chainsFor(id, index).length > 0;
+
+const isListable = (c, stableIds, index) => {
   const sym = (c.symbol || "").toLowerCase();
   if (stableIds.has(c.id) || STABLE_SYMBOLS.has(sym)) return false;
   if (WRAPPED_ID.test(c.id) || WRAPPED_SYMBOLS.has(sym)) return false;
@@ -272,6 +302,19 @@ const isListable = (c, stableIds) => {
   if (c.market_cap && c.market_cap < MIN_MARKET_CAP_USD) return false;
   // +29,000% in a day is a fresh launch / thin-liquidity artifact, not a trend
   if (Math.abs(c.price_change_percentage_24h || 0) > MAX_ABS_CHANGE_PCT) return false;
+  if (!hasSupportedChain(c.id, index)) return false;
+  return true;
+};
+
+// New Launch gets a much looser bar — a token minutes old legitimately has
+// low volume/market cap and a wild 24h change, which isListable would reject
+// outright. Still requires a real price and a chain we actually support.
+const isListableNew = (c, stableIds, index) => {
+  const sym = (c.symbol || "").toLowerCase();
+  if (stableIds.has(c.id) || STABLE_SYMBOLS.has(sym)) return false;
+  if (WRAPPED_ID.test(c.id) || WRAPPED_SYMBOLS.has(sym)) return false;
+  if (!c.current_price) return false;
+  if (!hasSupportedChain(c.id, index)) return false;
   return true;
 };
 
@@ -306,14 +349,38 @@ const fetchMarkets = (params) =>
     "low",
   );
 
-const pick = (rows, stableIds, n, exclude = new Set()) => {
+const pick = (rows, stableIds, index, n, exclude = new Set()) => {
   const out = [];
   for (const r of rows) {
     if (out.length >= n) break;
-    if (exclude.has(r.id) || !isListable(r, stableIds)) continue;
+    if (exclude.has(r.id) || !isListable(r, stableIds, index)) continue;
     out.push(r);
   }
   return out;
+};
+
+const pickNew = (rows, stableIds, index, n) => {
+  const out = [];
+  for (const r of rows) {
+    if (out.length >= n) break;
+    if (!isListableNew(r, stableIds, index)) continue;
+    out.push(r);
+  }
+  return out;
+};
+
+// Recently-listed coins — CoinGecko has no market data for these until
+// enriched via /coins/markets?ids=..., so this is two calls, not one.
+// Confirmed by hitting it live: this endpoint 401s on the fully keyless
+// tier — it needs at least a free CoinGecko "Demo" API key (COINGECKO_API_KEY
+// in .env; no paid plan required). Without a key, this throws, buildTrending
+// catches it, and the "New Launch" tab just falls back to its last good
+// snapshot (empty on a fresh install) instead of breaking anything else.
+const fetchNewListings = async () => {
+  const listings = await cgGet("/coins/list/new", {}, "low");
+  const ids = (listings || []).map((l) => l.id).slice(0, 60);
+  if (!ids.length) return [];
+  return fetchMarkets({ ids: ids.join(","), per_page: ids.length });
 };
 
 const buildTrending = async () => {
@@ -355,6 +422,14 @@ const buildTrending = async () => {
     console.warn("[market] search/trending failed:", err.message);
   }
 
+  // "New Launch" — recently listed coins, enriched with market data
+  let newLaunchRows = null;
+  try {
+    newLaunchRows = await fetchNewListings();
+  } catch (err) {
+    console.warn("[market] new listings failed:", err.message);
+  }
+
   // Big multichain tokens (LINK, AAVE…) sit in several ecosystem categories;
   // show each in only the first chain tab that lists it, so every chain tab
   // surfaces that chain's own tokens.
@@ -367,10 +442,11 @@ const buildTrending = async () => {
       if (!trendingRows || !rowsByCategory.rwa) {
         return { ...base, tokens: previousTokens(tab.key) };
       }
-      const hot = pick(trendingRows, stableIds, ALL_TRENDING);
+      const hot = pick(trendingRows, stableIds, index, ALL_TRENDING);
       const rwa = pick(
         rowsByCategory.rwa,
         stableIds,
+        index,
         ALL_RWA,
         new Set(hot.map((r) => r.id)),
       );
@@ -383,11 +459,20 @@ const buildTrending = async () => {
       };
     }
 
+    if (tab.key === "new") {
+      if (!newLaunchRows) return { ...base, tokens: previousTokens(tab.key) };
+      const picked = pickNew(newLaunchRows, stableIds, index, NEW_LAUNCH_COUNT);
+      return {
+        ...base,
+        tokens: picked.map((r) => toToken(r, index, { tag: "new" })),
+      };
+    }
+
     const rows = rowsByCategory[tab.key];
     if (!rows) return { ...base, tokens: previousTokens(tab.key) };
 
     const exclude = tab.chainId ? usedByChainTabs : new Set();
-    const picked = pick(rows, stableIds, PER_TAB, exclude);
+    const picked = pick(rows, stableIds, index, tab.count ?? PER_TAB, exclude);
     if (tab.chainId) picked.forEach((r) => usedByChainTabs.add(r.id));
     return { ...base, tokens: picked.map((r) => toToken(r, index)) };
   });

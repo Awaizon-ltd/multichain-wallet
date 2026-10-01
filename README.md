@@ -76,9 +76,9 @@ way — see [ARCHITECTURE.md](ARCHITECTURE.md) for the reasoning behind each:
 - **Solana is defined in constants but not wired up.** `constants/nonEvmChain.js`
   describes Solana as a chain but nothing in the signing/balance layer
   supports a non-EVM keypair yet; it's inert until that's built.
-- **A handful of legacy files still exist alongside their replacements**
-  (an old on-chain-router swap screen, a duplicate chain registry, an
-  unreachable ZetaChain bridge screen, and backend staking/pool-sync
-  infrastructure with no frontend consumer). None of them run — they were
-  left in place rather than deleted without your sign-off. See the cleanup
-  list this was flagged with for the exact files and why each is safe to remove.
+- **A handful of legacy frontend files still exist alongside their
+  replacements** (an old on-chain-router swap screen, a duplicate chain
+  registry, an unreachable ZetaChain bridge screen). None of them run.
+  The backend-side dead code (the staking/pool-sync feature, 15 orphaned
+  per-chain token catalogs, two stray Expo config files) has been removed —
+  see [crypto-backend/README.md](crypto-backend/README.md).

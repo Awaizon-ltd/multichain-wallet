@@ -5,7 +5,7 @@ import { markDatabaseReady } from "./DatabaseReady";
 
 let db = null;
 
-const CURRENT_DB_VERSION = 11;
+const CURRENT_DB_VERSION = 12;
 
 // initDatabase() can run more than once (App.js re-inits when the theme
 // finishes loading). Opening the same DB twice makes expo-sqlite share one
@@ -106,6 +106,22 @@ const openAndMigrate = async () => {
         UNIQUE(user_id, chain_id, address)
       );
 
+      -- NFTs manually imported by the user (NFT Import screen) — a token the
+      -- automatic per-chain scan didn't surface, e.g. one received before
+      -- this app version started tracking transfers on that chain.
+      CREATE TABLE IF NOT EXISTS nfts (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id TEXT NOT NULL,
+        chain_id INTEGER NOT NULL,
+        address TEXT NOT NULL,
+        token_id TEXT NOT NULL,
+        token_type TEXT NOT NULL,
+        name TEXT,
+        image TEXT,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE(user_id, chain_id, address, token_id)
+      );
+
       -- Generic persistent cache — the L2 store behind every withCache() call
       -- (balances, prices, token lists, backend responses). One row per key,
       -- so a single set()/flush() only ever touches the rows that changed —
@@ -188,8 +204,13 @@ const runMigrations = async (currentVersion) => {
       console.log("[Database] ✅ Migration 11 complete");
     }
 
-    // Add future migrations here:
-    // if (currentVersion < 12) { ... }
+    if (currentVersion < 12) {
+      console.log("[Database] 🔄 Migration 12: nfts table");
+      // Table already created above (fresh installs get it immediately);
+      // this just advances user_version for anyone upgrading from < 12.
+      await db.execAsync("PRAGMA user_version = 12");
+      console.log("[Database] ✅ Migration 12 complete");
+    }
 
     console.log("[Database] ✅ All migrations complete");
   } catch (error) {
@@ -211,6 +232,7 @@ const createIndexes = async () => {
     CREATE INDEX IF NOT EXISTS idx_contacts_user_id     ON contacts(user_id);
     CREATE INDEX IF NOT EXISTS idx_tokens_user_chain    ON tokens(user_id, chain_id);
     CREATE INDEX IF NOT EXISTS idx_tokens_address       ON tokens(address);
+    CREATE INDEX IF NOT EXISTS idx_nfts_user_chain      ON nfts(user_id, chain_id);
     CREATE INDEX IF NOT EXISTS idx_cache_entries_ts     ON cache_entries(ts);
   `);
   console.log("[Database] ✅ Indexes ready");
@@ -497,6 +519,51 @@ export const showToken = async (tokenId) => {
   await db.runAsync("UPDATE tokens SET is_visible = 1 WHERE id = ?", [tokenId]);
 };
 
+// ============ NFT OPERATIONS ============
+
+export const saveNft = async (userAddress, chainId, nftData) => {
+  const db = getDatabase();
+  const result = await db.runAsync(
+    "INSERT OR REPLACE INTO nfts (user_id, chain_id, address, token_id, token_type, name, image) VALUES (?, ?, ?, ?, ?, ?, ?)",
+    [
+      userAddress.toLowerCase(),
+      parseInt(chainId),
+      nftData.address.toLowerCase(),
+      String(nftData.tokenId),
+      nftData.tokenType,
+      nftData.name || null,
+      nftData.image || null,
+    ],
+  );
+  console.log("[Database] ✅ NFT saved:", result.lastInsertRowId);
+  return result.lastInsertRowId;
+};
+
+export const getNftsByChain = async (userAddress, chainId) => {
+  const db = getDatabase();
+  return db.getAllAsync(
+    "SELECT * FROM nfts WHERE LOWER(user_id) = ? AND chain_id = ? ORDER BY created_at DESC",
+    [userAddress.toLowerCase(), parseInt(chainId)],
+  );
+};
+
+export const nftExists = async (userAddress, chainId, address, tokenId) => {
+  const db = getDatabase();
+  const result = await db.getFirstAsync(
+    "SELECT COUNT(*) as count FROM nfts WHERE LOWER(user_id) = ? AND chain_id = ? AND LOWER(address) = ? AND token_id = ?",
+    [userAddress.toLowerCase(), parseInt(chainId), address.toLowerCase(), String(tokenId)],
+  );
+  return (result?.count ?? 0) > 0;
+};
+
+export const deleteNft = async (userAddress, chainId, address, tokenId) => {
+  const db = getDatabase();
+  await db.runAsync(
+    "DELETE FROM nfts WHERE LOWER(user_id) = ? AND chain_id = ? AND LOWER(address) = ? AND token_id = ?",
+    [userAddress.toLowerCase(), parseInt(chainId), address.toLowerCase(), String(tokenId)],
+  );
+};
+
 // ============ UTILITY OPERATIONS ============
 
 export const clearAllData = async () => {
@@ -554,6 +621,10 @@ export default {
   deleteToken,
   hideToken,
   showToken,
+  saveNft,
+  getNftsByChain,
+  nftExists,
+  deleteNft,
   clearAllData,
   getDatabaseStats,
 };

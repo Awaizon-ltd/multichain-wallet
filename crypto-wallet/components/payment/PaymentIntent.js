@@ -76,7 +76,7 @@ export const PAYMENT_TOKEN_ALLOWLIST = new Set([
 
 /**
  * Returns true if a token is approved for use on the Payment screen.
- * Native tokens (ETH, BNB, MATIC etc.) are excluded — payments should
+ * Native tokens (ETH, BNB, POL etc.) are excluded — payments should
  * be in stable value. Future: allow native if user explicitly opts in.
  *
  * @param {{ symbol: string, isNative: boolean, source?: string }} token

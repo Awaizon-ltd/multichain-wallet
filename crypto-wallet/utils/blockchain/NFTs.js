@@ -8,142 +8,208 @@ import {
 import { getAlchemyInstance, ALCHEMY_NETWORK_MAP } from "./Alchemy";
 import { SUPPORTED_CHAINS } from "../../constants/Chain";
 import { withCache, nftCache } from "./NftsCache";
+import { ERC721_ABI, ERC1155_ABI } from "./nftAbi";
+import * as NftDatabase from "../NftDatabase";
 
 // ============================================================================
 // CHAIN SUPPORT CONFIGURATION
 // ============================================================================
 
-// Chains that don't support Alchemy NFT APIs
+// Chains Alchemy's NFT API doesn't index yet — these fall back to scanning
+// the chain directly (discoverNFTsOnChain below). Add a chain's id here the
+// moment it goes live if Alchemy hasn't announced NFT API support for it.
 const CHAINS_WITHOUT_NFT_API_SUPPORT = [
   5042, // Arc — too new for Alchemy's NFT API
   4663, // Robinhood Chain — too new for Alchemy's NFT API
-  // Add other unsupported chains as needed
+  84532, // Base Sepolia — Alchemy doesn't index NFTs on this testnet
+  11155111, // Ethereum Sepolia — same
 ];
 
-// Popular NFT contract addresses for manual fetching
-const KNOWN_NFT_COLLECTIONS = {
-  // Add known collections for Arc (5042) / Robinhood Chain (4663) here once verified.
+// ============================================================================
+// MANUAL NFT DISCOVERY (fallback for chains Alchemy doesn't index yet)
+// ============================================================================
+
+const ERC721_TRANSFER_TOPIC = ethers.id("Transfer(address,address,uint256)");
+const ERC1155_TRANSFER_SINGLE_TOPIC = ethers.id(
+  "TransferSingle(address,address,address,uint256,uint256)",
+);
+const ERC1155_TRANSFER_BATCH_TOPIC = ethers.id(
+  "TransferBatch(address,address,address,uint256[],uint256[])",
+);
+const ERC1155_TRANSFER_IFACE = new ethers.Interface([
+  "event TransferSingle(address indexed operator, address indexed from, address indexed to, uint256 id, uint256 value)",
+  "event TransferBatch(address indexed operator, address indexed from, address indexed to, uint256[] ids, uint256[] values)",
+]);
+
+const addressToTopic = (address) => ethers.zeroPadValue(address, 32);
+
+// Most public RPCs cap eth_getLogs to a few thousand blocks per call, so the
+// scan runs in windows rather than one fromBlock:0 request. These chains are
+// only months old (see ARCHITECTURE.md), so a few hundred windows covers
+// their entire history without a dedicated indexer.
+const LOG_SCAN_CHUNK_BLOCKS = 5000;
+const LOG_SCAN_MAX_CHUNKS = 500;
+
+const buildERC721NFT = async (contract, contractAddress, tokenId, chain) => {
+  const [tokenURI, collectionName] = await Promise.all([
+    contract.tokenURI(tokenId).catch(() => null),
+    contract.name().catch(() => "Unknown"),
+  ]);
+  const metadata = tokenURI ? await fetchNFTMetadata(tokenURI) : null;
+
+  return {
+    contract: {
+      address: contractAddress,
+      name: collectionName,
+      tokenType: "ERC721",
+    },
+    tokenId: tokenId.toString(),
+    tokenType: "ERC721",
+    title: metadata?.name || `${collectionName} #${tokenId}`,
+    description: metadata?.description || "",
+    tokenUri: tokenURI ? { raw: tokenURI, gateway: normalizeIPFS(tokenURI) } : null,
+    media: metadata?.image
+      ? [{ raw: metadata.image, gateway: normalizeIPFS(metadata.image) }]
+      : [],
+    metadata,
+    chainId: chain.id,
+    chainName: chain.name,
+  };
 };
 
-// ============================================================================
-// MANUAL NFT FETCHING (Fallback for unsupported chains)
-// ============================================================================
+const buildERC1155NFT = async (contract, contractAddress, tokenId, chain) => {
+  // Per EIP-1155, {id} in the URI is a 64-char hex token id, zero-padded.
+  const [rawUri, collectionName] = await Promise.all([
+    contract.uri(tokenId).catch(() => null),
+    contract.name?.().catch(() => "Unknown") ?? Promise.resolve("Unknown"),
+  ]);
+  const tokenURI = rawUri?.includes("{id}")
+    ? rawUri.replace("{id}", BigInt(tokenId).toString(16).padStart(64, "0"))
+    : rawUri;
+  const metadata = tokenURI ? await fetchNFTMetadata(tokenURI) : null;
+
+  return {
+    contract: {
+      address: contractAddress,
+      name: collectionName,
+      tokenType: "ERC1155",
+    },
+    tokenId: tokenId.toString(),
+    tokenType: "ERC1155",
+    title: metadata?.name || `${collectionName} #${tokenId}`,
+    description: metadata?.description || "",
+    tokenUri: tokenURI ? { raw: tokenURI, gateway: normalizeIPFS(tokenURI) } : null,
+    media: metadata?.image
+      ? [{ raw: metadata.image, gateway: normalizeIPFS(metadata.image) }]
+      : [],
+    metadata,
+    chainId: chain.id,
+    chainName: chain.name,
+  };
+};
 
 /**
- * Manually fetch NFTs using direct contract calls
+ * Scan the chain directly for every ERC-721/1155 the address has ever
+ * received (via Transfer logs), then confirm *current* ownership with a
+ * live ownerOf/balanceOf call — a past incoming transfer doesn't mean the
+ * wallet still holds it. This is the fallback for chains too new to have
+ * Alchemy (or any indexer) support: it works for any contract, not just a
+ * hardcoded allowlist.
  */
-const getNFTsManually = async (ownerAddress, chain) => {
-  try {
-    const provider = createProviderForChain(chain);
-    const knownCollections = KNOWN_NFT_COLLECTIONS[chain.id] || [];
+const discoverNFTsOnChain = async (ownerAddress, chain) => {
+  const provider = createProviderForChain(chain);
+  const toTopic = addressToTopic(ownerAddress);
+  const latest = await provider.getBlockNumber();
 
-    if (knownCollections.length === 0) {
-      console.warn(
-        `[getNFTsManually] No known NFT collections configured for chain ${chain.name} (${chain.id})`,
-      );
+  const erc721Candidates = new Map(); // "contract:tokenId" -> contractAddress
+  const erc1155Candidates = new Map();
 
-      // Try using chain explorer API if available
-      const explorerNFTs = await fetchNFTsFromExplorer(ownerAddress, chain);
-      if (explorerNFTs.length > 0) {
-        return explorerNFTs;
-      }
+  let from = 0;
+  let chunks = 0;
+  while (from <= latest && chunks < LOG_SCAN_MAX_CHUNKS) {
+    const to = Math.min(from + LOG_SCAN_CHUNK_BLOCKS - 1, latest);
+    chunks += 1;
 
-      return [];
+    const [erc721Logs, singleLogs, batchLogs] = await Promise.all([
+      provider
+        .getLogs({ fromBlock: from, toBlock: to, topics: [ERC721_TRANSFER_TOPIC, null, toTopic] })
+        .catch(() => []),
+      provider
+        .getLogs({
+          fromBlock: from,
+          toBlock: to,
+          topics: [ERC1155_TRANSFER_SINGLE_TOPIC, null, null, toTopic],
+        })
+        .catch(() => []),
+      provider
+        .getLogs({
+          fromBlock: from,
+          toBlock: to,
+          topics: [ERC1155_TRANSFER_BATCH_TOPIC, null, null, toTopic],
+        })
+        .catch(() => []),
+    ]);
+
+    for (const log of erc721Logs) {
+      // tokenId is the 3rd indexed topic on ERC-721's Transfer event
+      const tokenId = BigInt(log.topics[3]).toString();
+      erc721Candidates.set(`${log.address.toLowerCase()}:${tokenId}`, log.address);
     }
 
-    const ERC721_ABI = [
-      "function balanceOf(address owner) view returns (uint256)",
-      "function tokenOfOwnerByIndex(address owner, uint256 index) view returns (uint256)",
-      "function tokenURI(uint256 tokenId) view returns (string)",
-      "function name() view returns (string)",
-      "function symbol() view returns (string)",
-    ];
-
-    const ERC1155_ABI = [
-      "function balanceOf(address account, uint256 id) view returns (uint256)",
-      "function uri(uint256 id) view returns (string)",
-    ];
-
-    const nftPromises = knownCollections.map(async (collection) => {
+    for (const log of [...singleLogs, ...batchLogs]) {
       try {
-        const isERC1155 = collection.type === "ERC1155";
-        const abi = isERC1155 ? ERC1155_ABI : ERC721_ABI;
-        const contract = new ethers.Contract(collection.address, abi, provider);
-
-        if (isERC1155) {
-          // ERC1155: Need to know token IDs beforehand (limitation of manual method)
-          return [];
-        } else {
-          // ERC721: Get all tokens owned
-          const balance = await contract.balanceOf(ownerAddress);
-          const balanceNum = Number(balance);
-
-          if (balanceNum === 0) {
-            return [];
-          }
-
-          const tokenIds = await Promise.all(
-            Array.from({ length: balanceNum }, (_, i) =>
-              contract.tokenOfOwnerByIndex(ownerAddress, i),
-            ),
-          );
-
-          const nfts = await Promise.all(
-            tokenIds.map(async (tokenId) => {
-              try {
-                const tokenURI = await contract.tokenURI(tokenId);
-                const metadata = await fetchNFTMetadata(tokenURI);
-
-                return {
-                  contract: {
-                    address: collection.address,
-                    name: collection.name,
-                    symbol: collection.symbol,
-                    tokenType: "ERC721",
-                  },
-                  tokenId: tokenId.toString(),
-                  tokenType: "ERC721",
-                  title: metadata?.name || `${collection.name} #${tokenId}`,
-                  description: metadata?.description || "",
-                  tokenUri: {
-                    raw: tokenURI,
-                    gateway: tokenURI,
-                  },
-                  media: metadata?.image
-                    ? [
-                        {
-                          raw: metadata.image,
-                          gateway: normalizeIPFS(metadata.image),
-                        },
-                      ]
-                    : [],
-                  metadata: metadata,
-                  chainId: chain.id,
-                  chainName: chain.name,
-                };
-              } catch (err) {
-                console.error(
-                  `[getNFTsManually] Error fetching token ${tokenId}:`,
-                  err,
-                );
-                return null;
-              }
-            }),
-          );
-
-          return nfts.filter((nft) => nft !== null);
+        const parsed = ERC1155_TRANSFER_IFACE.parseLog(log);
+        const ids =
+          parsed.name === "TransferSingle"
+            ? [parsed.args.id.toString()]
+            : parsed.args.ids.map((id) => id.toString());
+        for (const id of ids) {
+          erc1155Candidates.set(`${log.address.toLowerCase()}:${id}`, log.address);
         }
-      } catch (err) {
-        console.error(
-          `[getNFTsManually] Error fetching collection ${collection.address}:`,
-          err,
-        );
-        return [];
+      } catch {
+        // Malformed/unexpected log shape — skip it.
       }
-    });
+    }
 
-    const results = await Promise.all(nftPromises);
-    return results.flat();
+    from = to + 1;
+  }
+
+  const nfts = [];
+
+  await Promise.all(
+    Array.from(erc721Candidates.entries()).map(async ([key, contractAddress]) => {
+      const tokenId = key.split(":")[1];
+      try {
+        const contract = new ethers.Contract(contractAddress, ERC721_ABI, provider);
+        const currentOwner = await contract.ownerOf(tokenId);
+        if (currentOwner.toLowerCase() !== ownerAddress.toLowerCase()) return;
+        nfts.push(await buildERC721NFT(contract, contractAddress, tokenId, chain));
+      } catch {
+        // No longer a live ERC-721 at this address, or ownerOf reverted — skip.
+      }
+    }),
+  );
+
+  await Promise.all(
+    Array.from(erc1155Candidates.entries()).map(async ([key, contractAddress]) => {
+      const tokenId = key.split(":")[1];
+      try {
+        const contract = new ethers.Contract(contractAddress, ERC1155_ABI, provider);
+        const balance = await contract.balanceOf(ownerAddress, tokenId);
+        if (balance <= 0n) return;
+        nfts.push(await buildERC1155NFT(contract, contractAddress, tokenId, chain));
+      } catch {
+        // No longer a live ERC-1155 at this address — skip.
+      }
+    }),
+  );
+
+  return nfts;
+};
+
+const getNFTsManually = async (ownerAddress, chain) => {
+  try {
+    return await discoverNFTsOnChain(ownerAddress, chain);
   } catch (error) {
     console.error("[getNFTsManually] Error:", error);
     return [];
@@ -151,55 +217,46 @@ const getNFTsManually = async (ownerAddress, chain) => {
 };
 
 /**
- * Fetch NFTs from blockchain explorer API (e.g., Etherscan-like APIs)
+ * Verify a wallet owns a specific token and fetch its metadata — used by
+ * NFT Import (manually adding an NFT the automatic scan didn't surface,
+ * e.g. one received before the app started tracking transfers).
+ * Throws with a user-facing message on failure rather than returning null,
+ * so the import screen can show *why* it failed.
  */
-const fetchNFTsFromExplorer = async (ownerAddress, chain) => {
+export const verifyAndFetchNFT = async (
+  contractAddress,
+  tokenId,
+  chain,
+  ownerAddress,
+) => {
+  validateChain(chain, "verifyAndFetchNFT");
+  const provider = createProviderForChain(chain);
+
+  // Try ERC-721 first, then ERC-1155 — a contract will only ever answer one.
   try {
-    // Chains without Alchemy NFT API support fall back to their block
-    // explorer's Etherscan-compatible API (both Etherscan and Blockscout —
-    // which is what Arc and Robinhood Chain's explorers run — expose this
-    // same module=account&action=tokennfttx shape).
-    if (CHAINS_WITHOUT_NFT_API_SUPPORT.includes(chain.id) && chain.explorer) {
-      const response = await fetch(
-        `${chain.explorer}/api?module=account&action=tokennfttx&address=${ownerAddress}&startblock=0&endblock=99999999&sort=desc`,
-      );
-      const data = await response.json();
-
-      if (data.status === "1" && data.result?.length > 0) {
-        // Group by contract and tokenID to get unique NFTs
-        const uniqueNFTs = new Map();
-
-        data.result.forEach((tx) => {
-          const key = `${tx.contractAddress}-${tx.tokenID}`;
-          if (
-            !uniqueNFTs.has(key) &&
-            tx.to.toLowerCase() === ownerAddress.toLowerCase()
-          ) {
-            uniqueNFTs.set(key, {
-              contract: {
-                address: tx.contractAddress,
-                name: tx.tokenName || "Unknown",
-                symbol: tx.tokenSymbol || "???",
-                tokenType: tx.tokenID ? "ERC721" : "ERC1155",
-              },
-              tokenId: tx.tokenID,
-              tokenType: tx.tokenID ? "ERC721" : "ERC1155",
-              title: `${tx.tokenName || "NFT"} #${tx.tokenID}`,
-              description: "",
-              chainId: chain.id,
-              chainName: chain.name,
-            });
-          }
-        });
-
-        return Array.from(uniqueNFTs.values());
-      }
+    const contract = new ethers.Contract(contractAddress, ERC721_ABI, provider);
+    const currentOwner = await contract.ownerOf(tokenId);
+    if (currentOwner.toLowerCase() !== ownerAddress.toLowerCase()) {
+      throw new Error("This wallet doesn't own that token.");
     }
+    return await buildERC721NFT(contract, contractAddress, tokenId, chain);
+  } catch (erc721Error) {
+    if (erc721Error.message?.includes("doesn't own")) throw erc721Error;
+    // Fall through to ERC-1155 — ownerOf reverting usually means "wrong ABI", not "no NFT".
+  }
 
-    return [];
-  } catch (error) {
-    console.error("[fetchNFTsFromExplorer] Error:", error);
-    return [];
+  try {
+    const contract = new ethers.Contract(contractAddress, ERC1155_ABI, provider);
+    const balance = await contract.balanceOf(ownerAddress, tokenId);
+    if (balance <= 0n) {
+      throw new Error("This wallet doesn't own that token.");
+    }
+    return await buildERC1155NFT(contract, contractAddress, tokenId, chain);
+  } catch (erc1155Error) {
+    if (erc1155Error.message?.includes("doesn't own")) throw erc1155Error;
+    throw new Error(
+      "Couldn't verify this NFT. Check the contract address, token ID, and network.",
+    );
   }
 };
 
@@ -262,6 +319,30 @@ const normalizeIPFS = (url) => {
  * Get all NFTs owned by an address on a specific chain
  * CACHED for 5 minutes
  */
+/**
+ * Merge in NFTs the user manually imported (NFT Import screen) that the
+ * automatic scan/API didn't surface — deduped against what was already
+ * found, by contract + token id.
+ */
+const mergeImportedNFTs = async (ownerAddress, chain, baseNfts) => {
+  try {
+    const rows = await NftDatabase.getNftsByChain(ownerAddress, chain.id);
+    if (!rows.length) return baseNfts;
+
+    const known = new Set(
+      baseNfts.map((n) => `${n.contract?.address?.toLowerCase()}:${n.tokenId}`),
+    );
+    const imported = rows
+      .filter((row) => !known.has(`${row.address.toLowerCase()}:${row.token_id}`))
+      .map((row) => ({ ...NftDatabase.nftRowToObject(row), chainName: chain.name }));
+
+    return [...baseNfts, ...imported];
+  } catch (error) {
+    console.error("[mergeImportedNFTs] Error:", error);
+    return baseNfts;
+  }
+};
+
 export const getNFTsForOwner = async (ownerAddress, chain, options = {}) => {
   const cacheKey = nftCache.generateKey(
     "getNFTsForOwner",
@@ -281,7 +362,11 @@ export const getNFTsForOwner = async (ownerAddress, chain, options = {}) => {
         console.log(
           `[getNFTsForOwner] Chain ${chain.name} (${chain.id}) doesn't support Alchemy NFT API, using manual method...`,
         );
-        const manualNFTs = await getNFTsManually(ownerAddress, chain);
+        const manualNFTs = await mergeImportedNFTs(
+          ownerAddress,
+          chain,
+          await getNFTsManually(ownerAddress, chain),
+        );
         return {
           nfts: manualNFTs,
           totalCount: manualNFTs.length,
@@ -308,7 +393,11 @@ export const getNFTsForOwner = async (ownerAddress, chain, options = {}) => {
           console.warn(
             `[getNFTsForOwner] NFT API not available for ${chain.name}, falling back to manual method...`,
           );
-          const manualNFTs = await getNFTsManually(ownerAddress, chain);
+          const manualNFTs = await mergeImportedNFTs(
+            ownerAddress,
+            chain,
+            await getNFTsManually(ownerAddress, chain),
+          );
           return {
             nfts: manualNFTs,
             totalCount: manualNFTs.length,
@@ -318,13 +407,16 @@ export const getNFTsForOwner = async (ownerAddress, chain, options = {}) => {
         throw alchemyError;
       }
 
+      const alchemyNfts = nfts.ownedNfts.map((nft) => ({
+        ...nft,
+        chainId: chain.id,
+        chainName: chain.name,
+      }));
+      const merged = await mergeImportedNFTs(ownerAddress, chain, alchemyNfts);
+
       return {
-        nfts: nfts.ownedNfts.map((nft) => ({
-          ...nft,
-          chainId: chain.id,
-          chainName: chain.name,
-        })),
-        totalCount: nfts.totalCount,
+        nfts: merged,
+        totalCount: merged.length,
         pageKey: nfts.pageKey,
       };
     } catch (error) {
@@ -531,32 +623,14 @@ export const getNFTMetadata = async (contractAddress, tokenId, chain) => {
       const supportsNFTAPI = !CHAINS_WITHOUT_NFT_API_SUPPORT.includes(chain.id);
 
       if (!supportsNFTAPI) {
-        // Manual metadata fetch
         const provider = createProviderForChain(chain);
-        const ERC721_ABI = [
-          "function tokenURI(uint256 tokenId) view returns (string)",
-        ];
-        const contract = new ethers.Contract(
-          contractAddress,
-          ERC721_ABI,
-          provider,
-        );
-
-        const tokenURI = await contract.tokenURI(tokenId);
-        const metadata = await fetchNFTMetadata(tokenURI);
-
-        return {
-          contract: { address: contractAddress },
-          tokenId: tokenId.toString(),
-          tokenType: "ERC721",
-          title: metadata?.name || `Token #${tokenId}`,
-          description: metadata?.description || "",
-          tokenUri: { raw: tokenURI, gateway: normalizeIPFS(tokenURI) },
-          media: metadata?.image
-            ? [{ raw: metadata.image, gateway: normalizeIPFS(metadata.image) }]
-            : [],
-          metadata,
-        };
+        try {
+          const contract = new ethers.Contract(contractAddress, ERC721_ABI, provider);
+          return await buildERC721NFT(contract, contractAddress, tokenId, chain);
+        } catch {
+          const contract = new ethers.Contract(contractAddress, ERC1155_ABI, provider);
+          return await buildERC1155NFT(contract, contractAddress, tokenId, chain);
+        }
       }
 
       const alchemy = getAlchemyInstance(chain.id);

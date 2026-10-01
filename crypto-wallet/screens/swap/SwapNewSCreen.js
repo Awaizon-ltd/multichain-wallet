@@ -913,7 +913,7 @@ export default function SwapScreen() {
     !swap.isReadyToSwap || swap.isFetchingQuote || isInsufficientBalance;
 
   return (
-    <SafeAreaView style={styles.safeArea} edges={["top", "left", "right"]}>
+    <SafeAreaView style={styles.safeArea} edges={["left", "right"]}>
       <ScrollView
         contentContainerStyle={styles.scroll}
         showsVerticalScrollIndicator={false}

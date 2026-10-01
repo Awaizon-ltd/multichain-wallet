@@ -23,19 +23,4 @@ const rateLimiter = rateLimit({
   },
 });
 
-/**
- * Stricter limiter for build-tx (prevents tx-building spam).
- * 20 requests per minute per IP.
- */
-const buildTxLimiter = rateLimit({
-  windowMs:         60 * 1000,
-  max:              20,
-  standardHeaders:  true,
-  legacyHeaders:    false,
-  message: {
-    success: false,
-    error:   "Too many transaction build requests. Please wait a moment.",
-  },
-});
-
-module.exports = { rateLimiter, buildTxLimiter };
+module.exports = { rateLimiter };

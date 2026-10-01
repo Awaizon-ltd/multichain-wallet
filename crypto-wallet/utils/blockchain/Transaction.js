@@ -204,7 +204,7 @@ const getTransfersManual = async (address, chain, options = {}) => {
 // ─────────────────────────────────────────────────────────────
 
 /**
- * Send native token (ETH, MNT, MATIC, etc.)
+ * Send native token (ETH, POL, etc.)
  */
 export const sendNativeToken = async (
   privateKey,

@@ -236,19 +236,17 @@ const extract0xError = (data) => {
 
 // ─── Controllers ──────────────────────────────────────────────────────────────
 
+const DEBUG = process.env.NODE_ENV !== "production";
+const debug = (...args) => {
+  if (DEBUG) console.log(...args);
+};
+
 const getTokens = async (req, res, next) => {
   try {
     const chainId = parseInt(req.query.chainId ?? 1);
     const { search } = req.query;
 
-    if (process.env.NODE_ENV !== "production")
-      console.log(
-        `[getTokens] chainId=${chainId} search=${search ?? "(none)"}`,
-      );
-
     let tokens = getTokenList(chainId);
-    if (process.env.NODE_ENV !== "production")
-      console.log(`[getTokens] total tokens before search: ${tokens.length}`);
 
     if (search) {
       const q = search.toLowerCase().trim();
@@ -260,12 +258,8 @@ const getTokens = async (req, res, next) => {
       );
     }
 
-    if (process.env.NODE_ENV !== "production")
-      console.log(`[getTokens] returning ${tokens.length} tokens`);
     res.json({ success: true, data: { tokens, chainId } });
   } catch (err) {
-    if (process.env.NODE_ENV !== "production")
-      console.error("[getTokens] ERROR:", err.message);
     next(err);
   }
 };
@@ -283,28 +277,7 @@ const getPrice = async (req, res, next) => {
 
     const chainId = parseInt(req.query.chainId ?? 1);
 
-    // ── LOG 1: Incoming request ───────────────────────────────────────────────
-    if (process.env.NODE_ENV !== "production")
-      console.log("\n[getPrice] ━━━ INCOMING REQUEST ━━━");
-    if (process.env.NODE_ENV !== "production")
-      console.log("[getPrice] chainId          :", chainId);
-    if (process.env.NODE_ENV !== "production")
-      console.log("[getPrice] sellToken (raw)  :", sellToken);
-    if (process.env.NODE_ENV !== "production")
-      console.log("[getPrice] buyToken  (raw)  :", buyToken);
-    if (process.env.NODE_ENV !== "production")
-      console.log("[getPrice] sellAmount       :", sellAmount);
-    if (process.env.NODE_ENV !== "production")
-      console.log("[getPrice] slippagePercent  :", slippagePercentage);
-    if (process.env.NODE_ENV !== "production")
-      console.log(
-        "[getPrice] taker            :",
-        taker || takerAddress || "(none)",
-      );
-
     if (!sellToken || !buyToken || !sellAmount) {
-      if (process.env.NODE_ENV !== "production")
-        console.warn("[getPrice] REJECTED — missing required params");
       return res.status(400).json({
         success: false,
         error: "sellToken, buyToken, and sellAmount are required",
@@ -312,11 +285,6 @@ const getPrice = async (req, res, next) => {
     }
 
     if (!/^\d+$/.test(sellAmount) || BigInt(sellAmount) <= 0n) {
-      if (process.env.NODE_ENV !== "production")
-        console.warn(
-          "[getPrice] REJECTED — sellAmount not valid wei:",
-          sellAmount,
-        );
       return res.status(400).json({
         success: false,
         error: "sellAmount must be a positive integer (wei)",
@@ -343,110 +311,26 @@ const getPrice = async (req, res, next) => {
     const takerAddr = taker || takerAddress;
     if (takerAddr) params.taker = takerAddr;
 
-    // ── LOG 2: What we send to 0x ─────────────────────────────────────────────
-    const fullUrl = `${ZERO_EX_BASE_URL}${ZERO_EX_PRICE_PATH}`;
-    if (process.env.NODE_ENV !== "production")
-      console.log("\n[getPrice] ━━━ CALLING 0x API ━━━");
-    if (process.env.NODE_ENV !== "production")
-      console.log("[getPrice] URL             :", fullUrl);
-    if (process.env.NODE_ENV !== "production")
-      console.log("[getPrice] normalizedSell  :", normalizedSell);
-    if (process.env.NODE_ENV !== "production")
-      console.log("[getPrice] normalizedBuy   :", normalizedBuy);
-    if (process.env.NODE_ENV !== "production")
-      console.log("[getPrice] slippageBps     :", slippageBps);
-    if (process.env.NODE_ENV !== "production")
-      console.log(
-        "[getPrice] full params     :",
-        JSON.stringify(params, null, 2),
-      );
-    if (process.env.NODE_ENV !== "production")
-      console.log(
-        "[getPrice] headers         :",
-        JSON.stringify(getApiHeaders()),
-      );
+    debug(`[getPrice] chain=${chainId} ${normalizedSell}->${normalizedBuy} amount=${sellAmount}`);
 
-    const response = await axios.get(fullUrl, {
+    const response = await axios.get(`${ZERO_EX_BASE_URL}${ZERO_EX_PRICE_PATH}`, {
       params,
       headers: getApiHeaders(),
       timeout: 10000,
       transformResponse: [(raw) => raw],
     });
 
-    // ── LOG 3: Raw 0x response ────────────────────────────────────────────────
-    if (process.env.NODE_ENV !== "production")
-      console.log("\n[getPrice] ━━━ 0x RESPONSE ━━━");
-    if (process.env.NODE_ENV !== "production")
-      console.log("[getPrice] HTTP status     :", response.status);
-    if (process.env.NODE_ENV !== "production")
-      console.log("[getPrice] raw body        :", response.data);
-
-    let responseData;
-    try {
-      responseData = JSON.parse(response.data);
-    } catch (parseErr) {
-      if (process.env.NODE_ENV !== "production")
-        console.error("[getPrice] JSON.parse failed:", parseErr.message);
-      if (process.env.NODE_ENV !== "production")
-        console.error("[getPrice] raw data was     :", response.data);
-      throw parseErr;
-    }
-
-    // ── LOG 4: Key fields we use ──────────────────────────────────────────────
-    if (process.env.NODE_ENV !== "production")
-      console.log("\n[getPrice] ━━━ PARSED FIELDS ━━━");
-    if (process.env.NODE_ENV !== "production")
-      console.log(
-        "[getPrice] buyAmount       :",
-        responseData.buyAmount,
-        "type:",
-        typeof responseData.buyAmount,
-      );
-    if (process.env.NODE_ENV !== "production")
-      console.log(
-        "[getPrice] sellAmount      :",
-        responseData.sellAmount,
-        "type:",
-        typeof responseData.sellAmount,
-      );
-    if (process.env.NODE_ENV !== "production")
-      console.log("[getPrice] price           :", responseData.price);
-    if (process.env.NODE_ENV !== "production")
-      console.log(
-        "[getPrice] estimatedImpact :",
-        responseData.estimatedPriceImpact,
-      );
-    if (process.env.NODE_ENV !== "production")
-      console.log(
-        "[getPrice] issues          :",
-        JSON.stringify(responseData.issues ?? null),
-      );
-
+    const responseData = JSON.parse(response.data);
     res.json({ success: true, data: responseData });
   } catch (err) {
-    // ── LOG 5: Error details ──────────────────────────────────────────────────
-    if (process.env.NODE_ENV !== "production")
-      console.error("\n[getPrice] ━━━ ERROR ━━━");
-    if (process.env.NODE_ENV !== "production")
-      console.error("[getPrice] err.message     :", err.message);
     if (err.response) {
-      if (process.env.NODE_ENV !== "production")
-        console.error("[getPrice] HTTP status     :", err.response.status);
-      if (process.env.NODE_ENV !== "production")
-        console.error("[getPrice] 0x error body   :", err.response.data);
-      if (process.env.NODE_ENV !== "production")
-        console.error(
-          "[getPrice] 0x error parsed :",
-          extract0xError(err.response.data),
-        );
+      debug("[getPrice] 0x error:", err.response.status, extract0xError(err.response.data));
       return res.status(err.response.status).json({
         success: false,
         error: extract0xError(err.response.data),
         details: err.response.data,
       });
     }
-    if (process.env.NODE_ENV !== "production")
-      console.error("[getPrice] no response object — network/timeout error");
     next(err);
   }
 };
@@ -465,28 +349,7 @@ const getQuote = async (req, res, next) => {
 
     const chainId = parseInt(req.query.chainId ?? 1);
 
-    // ── LOG 1: Incoming request ───────────────────────────────────────────────
-    if (process.env.NODE_ENV !== "production")
-      console.log("\n[getQuote] ━━━ INCOMING REQUEST ━━━");
-    if (process.env.NODE_ENV !== "production")
-      console.log("[getQuote] chainId          :", chainId);
-    if (process.env.NODE_ENV !== "production")
-      console.log("[getQuote] sellToken (raw)  :", sellToken);
-    if (process.env.NODE_ENV !== "production")
-      console.log("[getQuote] buyToken  (raw)  :", buyToken);
-    if (process.env.NODE_ENV !== "production")
-      console.log("[getQuote] sellAmount       :", sellAmount);
-    if (process.env.NODE_ENV !== "production")
-      console.log("[getQuote] slippagePercent  :", slippagePercentage);
-    if (process.env.NODE_ENV !== "production")
-      console.log(
-        "[getQuote] taker            :",
-        taker || takerAddress || "(none)",
-      );
-
     if (!sellToken || !buyToken || !sellAmount) {
-      if (process.env.NODE_ENV !== "production")
-        console.warn("[getQuote] REJECTED — missing required params");
       return res.status(400).json({
         success: false,
         error: "sellToken, buyToken, and sellAmount are required",
@@ -494,11 +357,6 @@ const getQuote = async (req, res, next) => {
     }
 
     if (!/^\d+$/.test(sellAmount) || BigInt(sellAmount) <= 0n) {
-      if (process.env.NODE_ENV !== "production")
-        console.warn(
-          "[getQuote] REJECTED — sellAmount not valid wei:",
-          sellAmount,
-        );
       return res.status(400).json({
         success: false,
         error: "sellAmount must be a positive integer (wei)",
@@ -524,73 +382,16 @@ const getQuote = async (req, res, next) => {
     if (takerAddr) params.taker = takerAddr;
     if (skipValidation === "true") params.skipValidation = true;
 
-    // ── LOG 2: What we send to 0x ─────────────────────────────────────────────
-    const fullUrl = `${ZERO_EX_BASE_URL}${ZERO_EX_QUOTE_PATH}`;
-    if (process.env.NODE_ENV !== "production")
-      console.log("\n[getQuote] ━━━ CALLING 0x API ━━━");
-    if (process.env.NODE_ENV !== "production")
-      console.log("[getQuote] URL             :", fullUrl);
-    if (process.env.NODE_ENV !== "production")
-      console.log("[getQuote] normalizedSell  :", normalizedSell);
-    if (process.env.NODE_ENV !== "production")
-      console.log("[getQuote] normalizedBuy   :", normalizedBuy);
-    if (process.env.NODE_ENV !== "production")
-      console.log("[getQuote] slippageBps     :", slippageBps);
-    if (process.env.NODE_ENV !== "production")
-      console.log(
-        "[getQuote] full params     :",
-        JSON.stringify(params, null, 2),
-      );
+    debug(`[getQuote] chain=${chainId} ${normalizedSell}->${normalizedBuy} amount=${sellAmount}`);
 
-    const response = await axios.get(fullUrl, {
+    const response = await axios.get(`${ZERO_EX_BASE_URL}${ZERO_EX_QUOTE_PATH}`, {
       params,
       headers: getApiHeaders(),
       timeout: 15000,
       transformResponse: [(raw) => raw],
     });
 
-    // ── LOG 3: Raw 0x response ────────────────────────────────────────────────
-    if (process.env.NODE_ENV !== "production")
-      console.log("\n[getQuote] ━━━ 0x RESPONSE ━━━");
-    if (process.env.NODE_ENV !== "production")
-      console.log("[getQuote] HTTP status     :", response.status);
-    if (process.env.NODE_ENV !== "production")
-      console.log("[getQuote] raw body        :", response.data);
-
-    let quote;
-    try {
-      quote = JSON.parse(response.data);
-    } catch (parseErr) {
-      if (process.env.NODE_ENV !== "production")
-        console.error("[getQuote] JSON.parse failed:", parseErr.message);
-      throw parseErr;
-    }
-
-    // ── LOG 4: Key fields ─────────────────────────────────────────────────────
-    if (process.env.NODE_ENV !== "production")
-      console.log("\n[getQuote] ━━━ PARSED FIELDS ━━━");
-    if (process.env.NODE_ENV !== "production")
-      console.log(
-        "[getQuote] buyAmount       :",
-        quote.buyAmount,
-        "type:",
-        typeof quote.buyAmount,
-      );
-    if (process.env.NODE_ENV !== "production")
-      console.log(
-        "[getQuote] sellAmount      :",
-        quote.sellAmount,
-        "type:",
-        typeof quote.sellAmount,
-      );
-    if (process.env.NODE_ENV !== "production")
-      console.log(
-        "[getQuote] issues          :",
-        JSON.stringify(quote.issues ?? null),
-      );
-    if (process.env.NODE_ENV !== "production")
-      console.log("[getQuote] needsApproval   :", !!quote.issues?.allowance);
-
+    const quote = JSON.parse(response.data);
     const needsApproval = !!quote.issues?.allowance;
     const allowanceTarget = quote.issues?.allowance?.spender ?? null;
 
@@ -605,29 +406,14 @@ const getQuote = async (req, res, next) => {
       },
     });
   } catch (err) {
-    // ── LOG 5: Error details ──────────────────────────────────────────────────
-    if (process.env.NODE_ENV !== "production")
-      console.error("\n[getQuote] ━━━ ERROR ━━━");
-    if (process.env.NODE_ENV !== "production")
-      console.error("[getQuote] err.message     :", err.message);
     if (err.response) {
-      if (process.env.NODE_ENV !== "production")
-        console.error("[getQuote] HTTP status     :", err.response.status);
-      if (process.env.NODE_ENV !== "production")
-        console.error("[getQuote] 0x error body   :", err.response.data);
-      if (process.env.NODE_ENV !== "production")
-        console.error(
-          "[getQuote] 0x error parsed :",
-          extract0xError(err.response.data),
-        );
+      debug("[getQuote] 0x error:", err.response.status, extract0xError(err.response.data));
       return res.status(err.response.status).json({
         success: false,
         error: extract0xError(err.response.data),
         details: err.response.data,
       });
     }
-    if (process.env.NODE_ENV !== "production")
-      console.error("[getQuote] no response object — network/timeout error");
     next(err);
   }
 };

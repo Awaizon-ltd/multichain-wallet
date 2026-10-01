@@ -8,6 +8,7 @@ import { TransactionModal } from "../../components/TransactionModal";
 import Input from "../../components/common/Input";
 import Button from "../../components/common/Button";
 import Card from "../../components/common/Card";
+import NFTImage from "../../components/common/NFTImage";
 import { isValidAddress, formatAddress } from "../../utils/Wallet";
 import { estimateNFTTransferGas } from "../../services/blockchain";
 import { saveTransaction } from "../../utils/Database";
@@ -60,15 +61,6 @@ const NFTSendScreen = ({ navigation, route }) => {
       setGasEstimate(null);
     }
   }, [recipient, isWrongChain]);
-
-  const getImageUrl = (nft) => {
-    if (nft.image?.cachedUrl) return nft.image.cachedUrl;
-    if (nft.image?.thumbnailUrl) return nft.image.thumbnailUrl;
-    if (nft.image?.originalUrl) return nft.image.originalUrl;
-    if (nft.media?.[0]?.gateway) return nft.media[0].gateway;
-    if (nft.media?.[0]?.thumbnail) return nft.media[0].thumbnail;
-    return null;
-  };
 
   const estimateGas = async () => {
     try {
@@ -206,7 +198,7 @@ const NFTSendScreen = ({ navigation, route }) => {
           {
             text: "View NFTs",
             onPress: () => {
-              navigation.navigate("NFTList");
+              navigation.navigate("NFTs");
             },
           },
           {
@@ -308,7 +300,6 @@ const NFTSendScreen = ({ navigation, route }) => {
   };
 
   const txConfig = getTransactionConfig();
-  const imageUrl = getImageUrl(nft);
   const nftDisplayName = nft.name || nft.title || `Token #${nft.tokenId}`;
 
   return (
@@ -350,21 +341,7 @@ const NFTSendScreen = ({ navigation, route }) => {
         {/* NFT Preview */}
         <Card style={styles.nftCard}>
           <View style={styles.nftPreview}>
-            {imageUrl ? (
-              <Image
-                source={{ uri: imageUrl }}
-                style={styles.nftImage}
-                resizeMode="cover"
-              />
-            ) : (
-              <View style={styles.nftImagePlaceholder}>
-                <Ionicons
-                  name="image-outline"
-                  size={40}
-                  color={theme.COLORS.textTertiary}
-                />
-              </View>
-            )}
+            <NFTImage nft={nft} style={styles.nftImage} />
             <View style={styles.nftInfo}>
               <Text style={styles.nftName} numberOfLines={2}>
                 {nftDisplayName}
@@ -627,16 +604,6 @@ const createStyles = (theme) =>
       height: 100,
       borderRadius: 12,
       backgroundColor: theme.COLORS.background,
-    },
-    nftImagePlaceholder: {
-      width: 100,
-      height: 100,
-      borderRadius: 12,
-      backgroundColor: theme.COLORS.background,
-      justifyContent: "center",
-      alignItems: "center",
-      borderWidth: 1,
-      borderColor: theme.COLORS.border,
     },
     nftInfo: {
       flex: 1,

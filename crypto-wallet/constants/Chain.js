@@ -54,11 +54,11 @@ export const SUPPORTED_CHAINS = {
   POLYGON: {
     id: 137,
     name: "Polygon",
-    symbol: "MATIC",
+    symbol: "POL",
     nativeTokenName: "POL",
     rpcUrl: alchemyRpc("polygon-mainnet"),
     explorer: "https://polygonscan.com",
-    icon: "https://cryptologos.cc/logos/polygon-matic-logo.png?v=024",
+    icon: "https://coin-images.coingecko.com/coins/images/32440/large/pol.png",
     testnet: false,
   },
 

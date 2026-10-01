@@ -1,14 +1,14 @@
 // API Configuration
 export const API_CONFIG = {
   // Development
-  DEV_BASE_URL: "http://192.168.0.219:3000/api",
+  DEV_BASE_URL: "http://10.245.212.189:3030/api",
 
   // Production - Update this when you deploy your backend"http://192.168.0.219:3000/api" || "http://10.157.79.37:3000/api"
   PROD_BASE_URL: "https://api.awarizon.com/api",
 
   // Use this in your code
   BASE_URL: __DEV__
-    ? "http://192.168.0.138:3000/api"
+    ? "http://10.245.212.189:3030/api"
     : "https://api.awarizon.com/api",
 
   // Endpoints

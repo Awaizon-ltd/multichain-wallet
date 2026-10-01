@@ -28,6 +28,7 @@ import {
 
 const TAB_ICONS = {
   all: "flame",
+  new: "sparkles-outline",
   meme: "happy-outline",
   rwa: "business-outline",
 };
@@ -102,7 +103,7 @@ const TokenRow = memo(({ token, index, badgeUri, COLORS, onPress, isLast }) => {
 });
 
 // ── Main component ────────────────────────────────────────────────────────────
-const TrendingTokens = ({ onTokenPress, refreshKey = 0 }) => {
+const TrendingTokens = ({ onTokenPress, refreshKey = 0, hideHeader = false, onTabChange }) => {
   const { COLORS } = useTheme();
   const { getChain } = useChain();
   const [data, setData] = useState(null);
@@ -162,6 +163,11 @@ const TrendingTokens = ({ onTokenPress, refreshKey = 0 }) => {
 
   const tabs = data?.tabs ?? [];
   const activeTab = tabs.find((t) => t.key === activeKey) ?? tabs[0];
+
+  useEffect(() => {
+    if (activeTab) onTabChange?.(activeTab);
+  }, [activeTab?.key, activeTab?.chainId]);
+
   const badgeUri = useMemo(
     () => (activeTab?.chainId ? getChain(activeTab.chainId)?.icon : null),
     [activeTab?.chainId, getChain],
@@ -171,15 +177,17 @@ const TrendingTokens = ({ onTokenPress, refreshKey = 0 }) => {
   return (
     <View style={styles.wrap}>
       {/* Header */}
-      <View style={styles.header}>
-        <View style={styles.titleRow}>
-          <Ionicons name="trending-up" size={20} color={COLORS.text} />
-          <Text style={[styles.title, { color: COLORS.text }]}>Trending</Text>
+      {!hideHeader && (
+        <View style={styles.header}>
+          <View style={styles.titleRow}>
+            <Ionicons name="trending-up" size={20} color={COLORS.text} />
+            <Text style={[styles.title, { color: COLORS.text }]}>Trending</Text>
+          </View>
+          {updated ? (
+            <Text style={[styles.updated, { color: COLORS.textTertiary }]}>Updated {updated}</Text>
+          ) : null}
         </View>
-        {updated ? (
-          <Text style={[styles.updated, { color: COLORS.textTertiary }]}>Updated {updated}</Text>
-        ) : null}
-      </View>
+      )}
 
       {/* Tabs */}
       <ScrollView

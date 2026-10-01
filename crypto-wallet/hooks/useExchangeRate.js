@@ -33,6 +33,7 @@ const FALLBACK_RATES = {
   PYUSD: { USD: 1.0, NGN: 1580, EUR: 0.92, GBP: 0.79 },
   ETH: { USD: 3400, NGN: 5372000, EUR: 3128, GBP: 2686 },
   BNB: { USD: 580, NGN: 916400, EUR: 533.6, GBP: 458.2 },
+  POL: { USD: 0.58, NGN: 916, EUR: 0.53, GBP: 0.46 },
   MATIC: { USD: 0.58, NGN: 916, EUR: 0.53, GBP: 0.46 },
   AVAX: { USD: 35, NGN: 55300, EUR: 32.2, GBP: 27.65 },
 };
@@ -47,7 +48,8 @@ const COINGECKO_IDS = {
   DAI: "dai",
   ETH: "ethereum",
   BNB: "binancecoin",
-  MATIC: "matic-network",
+  POL: "polygon-ecosystem-token",
+  MATIC: "polygon-ecosystem-token",
   AVAX: "avalanche-2",
 };
 

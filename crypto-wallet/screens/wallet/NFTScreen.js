@@ -16,8 +16,10 @@ import { useWallet } from '../../contexts/WalletContext';
 import { useTheme } from '../../contexts/ThemeContext';
 import Card from '../../components/common/Card';
 import Button from '../../components/common/Button';
+import NFTImage from '../../components/common/NFTImage';
 import { SPACING, FONTS } from '../../constants/Theme';
 import { getAllNFTsAcrossChains } from '../../utils/blockchain/NFTs';
+import { getNFTImageUrl } from '../../utils/blockchain/nftImage';
 import { SUPPORTED_CHAINS } from '../../constants/Chain';
 import Alert from '../../utils/Alert';
 
@@ -72,15 +74,6 @@ const NFTScreen = ({ navigation }) => {
     setShowDetails(true);
   };
 
-  const getImageUrl = (nft) => {
-    if (nft.image?.cachedUrl) return nft.image.cachedUrl;
-    if (nft.image?.thumbnailUrl) return nft.image.thumbnailUrl;
-    if (nft.image?.originalUrl) return nft.image.originalUrl;
-    if (nft.media?.[0]?.gateway) return nft.media[0].gateway;
-    if (nft.media?.[0]?.thumbnail) return nft.media[0].thumbnail;
-    return null;
-  };
-
   const getChainIcon = (chainId) => {
     const chain = Object.values(SUPPORTED_CHAINS).find(c => c.id === chainId);
     return chain?.icon;
@@ -113,7 +106,18 @@ const NFTScreen = ({ navigation }) => {
       padding: SPACING.md,
     },
     header: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      justifyContent: 'space-between',
       marginBottom: SPACING.xs,
+    },
+    importButton: {
+      width: 36,
+      height: 36,
+      borderRadius: 18,
+      backgroundColor: COLORS.surface,
+      justifyContent: 'center',
+      alignItems: 'center',
     },
     title: {
       fontSize: FONTS.sizes.xl,
@@ -191,13 +195,6 @@ const NFTScreen = ({ navigation }) => {
       height: CARD_WIDTH,
       backgroundColor: COLORS.background,
     },
-    nftImagePlaceholder: {
-      width: '100%',
-      height: CARD_WIDTH,
-      backgroundColor: COLORS.background,
-      justifyContent: 'center',
-      alignItems: 'center',
-    },
     chainBadge: {
       position: 'absolute',
       top: 8,
@@ -249,6 +246,10 @@ const NFTScreen = ({ navigation }) => {
       color: COLORS.textTertiary,
       marginTop: 4,
     },
+    emptyImportButton: {
+      marginTop: SPACING.md,
+      alignSelf: 'stretch',
+    },
     modalOverlay: {
       flex: 1,
       backgroundColor: 'rgba(0, 0, 0, 0.9)',
@@ -296,13 +297,6 @@ const NFTScreen = ({ navigation }) => {
       width: '100%',
       height: 300,
       backgroundColor: COLORS.background,
-    },
-    modalImagePlaceholder: {
-      width: '100%',
-      height: 300,
-      backgroundColor: COLORS.background,
-      justifyContent: 'center',
-      alignItems: 'center',
     },
     detailsSection: {
       padding: SPACING.md,
@@ -367,26 +361,15 @@ const NFTScreen = ({ navigation }) => {
   });
 
   const NFTCard = ({ nft }) => {
-    const imageUrl = getImageUrl(nft);
     const chainIcon = getChainIcon(nft.chainId);
-    
+
     return (
       <Pressable
         style={styles.nftCard}
         onPress={() => navigation.navigate('NFTDetail', { nft })}
       >
-        {imageUrl ? (
-          <Image
-            source={{ uri: imageUrl }}
-            style={styles.nftImage}
-            resizeMode="cover"
-          />
-        ) : (
-          <View style={styles.nftImagePlaceholder}>
-            <Ionicons name="image-outline" size={40} color={COLORS.textTertiary} />
-          </View>
-        )}
-        
+        <NFTImage nft={nft} style={styles.nftImage} />
+
         {chainIcon && (
           <View style={styles.chainBadge}>
             <Image source={{ uri: chainIcon }} style={styles.chainIcon} />
@@ -453,7 +436,6 @@ const NFTScreen = ({ navigation }) => {
   const NFTDetailsModal = () => {
     if (!selectedNFT) return null;
 
-    const imageUrl = getImageUrl(selectedNFT);
     const attributes = selectedNFT.raw?.metadata?.attributes || [];
     const chainIcon = getChainIcon(selectedNFT.chainId);
 
@@ -482,17 +464,11 @@ const NFTScreen = ({ navigation }) => {
                 </Pressable>
               </View>
 
-              {imageUrl ? (
-                <Image
-                  source={{ uri: imageUrl }}
-                  style={styles.modalImage}
-                  resizeMode="contain"
-                />
-              ) : (
-                <View style={styles.modalImagePlaceholder}>
-                  <Ionicons name="image-outline" size={80} color={COLORS.textTertiary} />
-                </View>
-              )}
+              <NFTImage
+                nft={selectedNFT}
+                style={styles.modalImage}
+                resizeMode="contain"
+              />
 
               <View style={styles.detailsSection}>
                 <Text style={styles.detailsName}>
@@ -584,6 +560,12 @@ const NFTScreen = ({ navigation }) => {
               {totalNFTCount} {totalNFTCount === 1 ? 'item' : 'items'} across all chains
             </Text>
           </View>
+          <Pressable
+            style={styles.importButton}
+            onPress={() => navigation.navigate('NFTImport')}
+          >
+            <Ionicons name="add" size={22} color={COLORS.primary} />
+          </Pressable>
         </View>
 
         {nftsByChain.length > 0 && (
@@ -613,6 +595,12 @@ const NFTScreen = ({ navigation }) => {
             <Text style={styles.emptySubtext}>
               NFTs you own will appear here
             </Text>
+            <Button
+              title="Import NFT"
+              onPress={() => navigation.navigate('NFTImport')}
+              variant="secondary"
+              style={styles.emptyImportButton}
+            />
           </Card>
         ) : (
           <View style={styles.nftsGrid}>

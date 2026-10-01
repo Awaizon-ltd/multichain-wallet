@@ -12,6 +12,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { useTheme } from '../../contexts/ThemeContext'; // Adjust path as needed
 import Card from '../../components/common/Card';
 import Button from '../../components/common/Button';
+import NFTImage from '../../components/common/NFTImage';
 import { SUPPORTED_CHAINS } from '../../constants/Chain';
 import { formatAddress } from '../../utils/Wallet';
 import * as Clipboard from 'expo-clipboard';
@@ -22,20 +23,10 @@ const NFTDetailScreen = ({ route, navigation }) => {
   const styles = createStyles(theme);
   const { nft } = route.params;
 
-  const getImageUrl = (nft) => {
-    if (nft.image?.cachedUrl) return nft.image.cachedUrl;
-    if (nft.image?.thumbnailUrl) return nft.image.thumbnailUrl;
-    if (nft.image?.originalUrl) return nft.image.originalUrl;
-    if (nft.media?.[0]?.gateway) return nft.media[0].gateway;
-    if (nft.media?.[0]?.thumbnail) return nft.media[0].thumbnail;
-    return null;
-  };
-
   const getChain = () => {
     return Object.values(SUPPORTED_CHAINS).find((c) => c.id === nft.chainId);
   };
 
-  const imageUrl = getImageUrl(nft);
   const chain = getChain();
   const attributes = nft.raw?.metadata?.attributes || [];
 
@@ -94,21 +85,7 @@ const NFTDetailScreen = ({ route, navigation }) => {
         </View>
 
         {/* Image */}
-        {imageUrl ? (
-          <Image
-            source={{ uri: imageUrl }}
-            style={styles.image}
-            resizeMode="contain"
-          />
-        ) : (
-          <View style={styles.imagePlaceholder}>
-            <Ionicons
-              name="image-outline"
-              size={80}
-              color={theme.COLORS.textTertiary}
-            />
-          </View>
-        )}
+        <NFTImage nft={nft} style={styles.image} resizeMode="contain" />
 
         {/* Main Info */}
         <View style={styles.content}>
@@ -227,13 +204,6 @@ const createStyles = (theme) =>
       width: '100%',
       height: 400,
       backgroundColor: theme.COLORS.surface,
-    },
-    imagePlaceholder: {
-      width: '100%',
-      height: 400,
-      backgroundColor: theme.COLORS.surface,
-      justifyContent: 'center',
-      alignItems: 'center',
     },
     content: {
       padding: theme.SPACING.md,

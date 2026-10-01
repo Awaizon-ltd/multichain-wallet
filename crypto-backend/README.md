@@ -39,12 +39,10 @@ npm run dev            # nodemon; use `npm start` for a plain node process
 | `LIFI_INTEGRATOR` | Integrator string LI.FI attributes requests to |
 | `LIFI_FEE_ENABLED` | `1` to include our fee in LI.FI quotes, unset to omit it |
 
-`RPC_URL` / `FACTORY_ADDRESS` / `CHAIN_ID` and `REDIS_URL` in the current
-`.env` are leftovers nothing in `src/` reads anymore — `RPC_URL`/
-`FACTORY_ADDRESS`/`CHAIN_ID` belong to the staking/pool-sync feature flagged
-for removal (see the project's cleanup notes), and `REDIS_URL` predates the
-SQLite-based cache layer the wallet app uses instead. Safe to drop once
-that's confirmed.
+A `compression` middleware is applied globally in `server.js`, and the swap
+endpoints (`/price`, `/price/best`, `/quote`) are rate-limited — they hit
+paid 0x/LI.FI calls, so an unlimited client loop would run up API cost, not
+just load.
 
 ## Adding a chain
 

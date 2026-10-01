@@ -192,7 +192,7 @@ export const WETH_ADDRESSES = {
   11155111: "0x7b79995e5f793A07Bc00c21412e50Ecae098E7f9", // Sepolia (WETH)
   56: "0xbb4CdB9CBd36B01bD1cBaEBF2De08d9173bc095c", // BSC (WBNB)
   97: "0xae13d989daC2f0dEbFf460aC112a837C89BAa7cd", // BSC Testnet (WBNB)
-  137: "0x0d500B1d8E8eF31E21C99d1Db9A6444d3ADf1270", // Polygon (WMATIC)
+  137: "0x0d500B1d8E8eF31E21C99d1Db9A6444d3ADf1270", // Polygon (WPOL)
   80001: "0x9c3C9283D3e44854697Cd22D3Faa240Cfb032889", // Mumbai (WMATIC)
   8453: "0x4200000000000000000000000000000000000006", // Base (WETH)
   84532: "0x4200000000000000000000000000000000000006", // Base Sepolia (WETH)
@@ -206,7 +206,7 @@ export const DEFAULT_SLIPPAGE = 0.5;
 // Deadline (20 minutes from now)
 export const getDeadline = () => Math.floor(Date.now() / 1000) + 60 * 20;
 
-// Check if token is native ETH/BNB/MATIC
+// Check if token is native ETH/BNB/POL
 export const isNativeToken = (address) => {
   if (!address) return false;
   const addr = address.toLowerCase();

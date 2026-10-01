@@ -11,7 +11,8 @@ const DETAILS_TTL = 60 * 60 * 1000; // 1h — coin metadata rarely changes
 // Map chain symbols to CoinGecko IDs (for native assets)
 const COIN_ID_MAP = {
   ETH: "ethereum",
-  MATIC: "matic-network",
+  POL: "polygon-ecosystem-token",
+  MATIC: "polygon-ecosystem-token",
   BNB: "binancecoin",
   AVAX: "avalanche-2",
   OP: "optimism",
@@ -77,6 +78,7 @@ const TOKEN_ID_MAP = {
 
   // Wrapped Tokens
   WETH: "weth",
+  WPOL: "wmatic",
   WMATIC: "wmatic",
   WBNB: "wbnb",
   WAVAX: "wrapped-avax",

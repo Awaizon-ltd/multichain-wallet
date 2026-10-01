@@ -28,7 +28,9 @@ const TOKEN_ID_MAP = {
   'BUSD': 'binance-usd',
   
   // Polygon
-  'MATIC': 'matic-network',
+  'POL': 'polygon-ecosystem-token',
+  'MATIC': 'polygon-ecosystem-token',
+  'WPOL': 'wmatic',
   'WMATIC': 'wmatic',
   
   // Arbitrum
@@ -50,7 +52,8 @@ const TOKEN_ID_MAP = {
 const LOGO_URLS = {
   'ETH': 'https://assets.coingecko.com/coins/images/279/small/ethereum.png',
   'BNB': 'https://assets.coingecko.com/coins/images/825/small/bnb-icon2_2x.png',
-  'MATIC': 'https://assets.coingecko.com/coins/images/4713/small/matic-token-icon.png',
+  'POL': 'https://coin-images.coingecko.com/coins/images/32440/large/pol.png',
+  'MATIC': 'https://coin-images.coingecko.com/coins/images/32440/large/pol.png',
   'AVAX': 'https://assets.coingecko.com/coins/images/12559/small/coin-round-red.png',
   'FTM': 'https://assets.coingecko.com/coins/images/4001/small/Fantom.png',
   'ARB': 'https://assets.coingecko.com/coins/images/16547/small/photo_2023-03-29_21.47.00.jpeg',

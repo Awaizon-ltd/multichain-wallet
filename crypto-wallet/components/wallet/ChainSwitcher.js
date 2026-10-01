@@ -1,707 +1,492 @@
-import React, { useState, useEffect } from "react";
+// components/wallet/ChainSwitcher.js
+// Bottom-sheet network picker: search, the connected network up top,
+// featured networks as tiles, then every other network (testnets last).
+import React, { memo, useEffect, useMemo, useRef, useState } from "react";
 import {
   View,
   Text,
   StyleSheet,
   Modal,
   FlatList,
-  TouchableOpacity,
+  Pressable,
   Image,
-  SectionList,
+  TextInput,
+  Animated,
+  Easing,
+  ActivityIndicator,
+  Dimensions,
 } from "react-native";
+import { Ionicons } from "@expo/vector-icons";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
+import * as Haptics from "expo-haptics";
 import { useChain } from "../../contexts/ChainContext";
 import { useTheme } from "../../contexts/ThemeContext";
 import { DEFAULT_CHAIN } from "../../constants/Chain";
 
-// ─── Prefetch all chain icons on first load ───────────────────────────────────
-const prefetchChainIcons = (chains) => {
-  chains.forEach((chain) => {
-    if (chain.icon) Image.prefetch(chain.icon).catch(() => {});
-  });
-};
+// Networks shown as large tiles at the top (when not searching)
+const FEATURED_IDS = [DEFAULT_CHAIN.id, 4663, 1, 8453];
 
-// Chain IDs that get the "featured" treatment at the top
-const FEATURED_CHAIN_IDS = [DEFAULT_CHAIN.id, 1]; // Default chain, Ethereum
+const SCREEN_H = Dimensions.get("window").height;
+
+// ── Chain icon with letter fallback ───────────────────────────────────────────
+const ChainIcon = memo(({ uri, name, size, COLORS }) => {
+  const [failed, setFailed] = useState(false);
+  if (!uri || failed) {
+    return (
+      <View
+        style={{
+          width: size,
+          height: size,
+          borderRadius: size / 2,
+          backgroundColor: COLORS.primaryMuted,
+          alignItems: "center",
+          justifyContent: "center",
+        }}
+      >
+        <Text style={{ fontSize: size * 0.42, fontWeight: "800", color: COLORS.text }}>
+          {name?.[0] ?? "?"}
+        </Text>
+      </View>
+    );
+  }
+  return (
+    <Image
+      source={{ uri, cache: "force-cache" }}
+      onError={() => setFailed(true)}
+      fadeDuration={0}
+      style={{ width: size, height: size, borderRadius: size / 2 }}
+    />
+  );
+});
 
 const ChainSwitcher = ({ visible, onClose }) => {
-  const { COLORS, SPACING, FONTS, BORDER_RADIUS, SHADOWS } = useTheme();
+  const { COLORS } = useTheme();
+  const insets = useSafeAreaInsets();
   const { activeChain, switchChain, getAllChains } = useChain();
   const chains = getAllChains();
 
-  useEffect(() => {
-    if (chains.length > 0) prefetchChainIcons(chains);
-  }, [chains.length]);
+  const [query, setQuery] = useState("");
+  const [pendingId, setPendingId] = useState(null);
+  const [error, setError] = useState(null);
 
-  // ── Split into featured vs other ──────────────────────────────────────────
-  const featuredChains = FEATURED_CHAIN_IDS.map((id) =>
-    chains.find((c) => c.id === id),
-  ).filter(Boolean);
+  const overlay = useRef(new Animated.Value(0)).current;
+  const sheetY = useRef(new Animated.Value(SCREEN_H)).current;
 
-  const otherChains = chains.filter((c) => !FEATURED_CHAIN_IDS.includes(c.id));
-
-  const sections = [
-    { title: "Main Networks", data: featuredChains },
-    ...(otherChains.length > 0
-      ? [{ title: "Other EVM Chains", data: otherChains }]
-      : []),
-  ];
-
-  const handleSelectChain = async (chain) => {
-    if (chain.id === activeChain.id) {
-      onClose();
-      return;
-    }
-    try {
-      await switchChain(chain);
-      onClose();
-    } catch (error) {
-      console.error("Error switching chain:", error);
-    }
-  };
-
-  const styles = createStyles({
-    COLORS,
-    SPACING,
-    FONTS,
-    BORDER_RADIUS,
-    SHADOWS,
-  });
-
-  // ── Chain icon with fallback ──────────────────────────────────────────────
-  const ChainIcon = ({ uri, name, size = 36 }) => {
-    const [err, setErr] = useState(false);
-    if (!uri || err) {
-      return (
-        <View
-          style={[
-            styles.iconFallback,
-            { width: size, height: size, borderRadius: size / 2 },
-          ]}
-        >
-          <Text style={styles.iconFallbackText}>{name?.[0] ?? "?"}</Text>
-        </View>
-      );
-    }
-    return (
-      <Image
-        source={{ uri, cache: "force-cache" }}
-        style={{ width: size, height: size, borderRadius: size / 2 }}
-        onError={() => setErr(true)}
-        fadeDuration={0}
-      />
-    );
-  };
-
-  // ── Featured card (larger, more prominent) ────────────────────────────────
-  const FeaturedChainCard = ({ item }) => {
-    const isSelected = item.id === activeChain?.id;
-    const isPrimary = item.id === DEFAULT_CHAIN.id;
-
-    return (
-      <TouchableOpacity
-        onPress={() => handleSelectChain(item)}
-        activeOpacity={0.75}
-        style={styles.featuredCardWrapper}
-      >
-        <View
-          style={[
-            styles.featuredCard,
-            isSelected && { borderColor: COLORS.primary, borderWidth: 2 },
-            isPrimary && styles.featuredCardHighlight,
-          ]}
-        >
-          {/* Top-right selected badge */}
-          {isSelected && (
-            <View style={styles.featuredSelectedBadge}>
-              <Text style={styles.checkmark}>✓</Text>
-            </View>
-          )}
-
-          {/* "Primary" label for Mantle */}
-          {isPrimary && (
-            <View style={styles.primaryLabel}>
-              <Text style={styles.primaryLabelText}>Primary</Text>
-            </View>
-          )}
-
-          <ChainIcon uri={item.icon} name={item.name} size={44} />
-
-          <Text
-            style={[
-              styles.featuredName,
-              isSelected && { color: COLORS.primary },
-            ]}
-            numberOfLines={1}
-          >
-            {item.name}
-          </Text>
-          <Text style={styles.featuredSymbol}>{item.symbol}</Text>
-
-          {item.testnet && (
-            <View style={[styles.testnetBadge, { marginTop: 4 }]}>
-              <Text style={styles.testnetText}>TESTNET</Text>
-            </View>
-          )}
-        </View>
-      </TouchableOpacity>
-    );
-  };
-
-  // ── Regular list row (other chains) ──────────────────────────────────────
-  const ChainRow = ({ item }) => {
-    const isSelected = item.id === activeChain?.id;
-    return (
-      <TouchableOpacity
-        onPress={() => handleSelectChain(item)}
-        activeOpacity={0.7}
-      >
-        <View
-          style={[styles.chainItem, isSelected && styles.chainItemSelected]}
-        >
-          <View style={styles.chainLeft}>
-            <ChainIcon uri={item.icon} name={item.name} size={32} />
-            <View style={styles.chainInfo}>
-              <View style={styles.chainNameRow}>
-                <Text
-                  style={[
-                    styles.chainName,
-                    isSelected && { color: COLORS.primary },
-                  ]}
-                >
-                  {item.name}
-                </Text>
-                {item.testnet && (
-                  <View style={styles.testnetBadge}>
-                    <Text style={styles.testnetText}>TEST</Text>
-                  </View>
-                )}
-              </View>
-              <Text style={styles.chainSymbol}>{item.symbol}</Text>
-            </View>
-          </View>
-          {isSelected && (
-            <View style={styles.selectedBadge}>
-              <Text style={styles.checkmark}>✓</Text>
-            </View>
-          )}
-        </View>
-      </TouchableOpacity>
-    );
-  };
-
-  // ── Section header ────────────────────────────────────────────────────────
-  const SectionHeader = ({ title }) => (
-    <View style={styles.sectionHeader}>
-      <View style={styles.sectionHeaderLine} />
-      <Text style={styles.sectionHeaderText}>{title}</Text>
-      <View style={styles.sectionHeaderLine} />
-    </View>
-  );
-
-  return (
-    <Modal
-      visible={visible}
-      transparent
-      animationType="slide"
-      onRequestClose={onClose}
-    >
-      <TouchableOpacity
-        style={styles.modalOverlay}
-        activeOpacity={1}
-        onPress={onClose}
-      >
-        <TouchableOpacity
-          activeOpacity={1}
-          style={styles.modalContent}
-          onPress={(e) => e.stopPropagation()}
-        >
-          {/* Header */}
-          <View style={styles.header}>
-            <View>
-              <Text style={styles.title}>Select Network</Text>
-              <Text style={styles.subtitle}>
-                {chains.length} networks available
-              </Text>
-            </View>
-            <TouchableOpacity onPress={onClose} style={styles.closeButton}>
-              <Text style={styles.closeText}>✕</Text>
-            </TouchableOpacity>
-          </View>
-
-          <SectionList
-            sections={sections}
-            keyExtractor={(item) => item.id.toString()}
-            showsVerticalScrollIndicator={false}
-            contentContainerStyle={styles.listContent}
-            renderSectionHeader={({ section }) => (
-              <SectionHeader title={section.title} />
-            )}
-            renderItem={({ item, section }) => {
-              if (section.title === "Main Networks") {
-                // Render featured cards side-by-side via a row wrapper
-                // SectionList calls renderItem once per item, so we render
-                // a full-width featured card per item and use flexbox row
-                // via a surrounding view in the section header render.
-                // Simpler: just render each as a full-width featured row.
-                return <FeaturedChainCard item={item} />;
-              }
-              return <ChainRow item={item} />;
-            }}
-            // Wrap the two featured cards in a horizontal row
-            renderSectionFooter={() => null}
-            stickySectionHeadersEnabled={false}
-          />
-        </TouchableOpacity>
-      </TouchableOpacity>
-    </Modal>
-  );
-};
-
-// ─── We render featured cards in a horizontal pair by overriding the section ──
-// Replace the SectionList with a custom scroll so we can control the
-// featured row layout precisely.
-const ChainSwitcherInner = ({ visible, onClose }) => {
-  const { COLORS, SPACING, FONTS, BORDER_RADIUS, SHADOWS } = useTheme();
-  const { activeChain, switchChain, getAllChains } = useChain();
-  const chains = getAllChains();
+  const styles = useMemo(() => makeStyles(COLORS), [COLORS]);
 
   useEffect(() => {
-    if (chains.length > 0) prefetchChainIcons(chains);
+    chains.forEach((c) => c.icon && Image.prefetch(c.icon).catch(() => {}));
   }, [chains.length]);
 
-  const featuredChains = FEATURED_CHAIN_IDS.map((id) =>
-    chains.find((c) => c.id === id),
-  ).filter(Boolean);
+  // ── Open / close animation ──────────────────────────────────────────────────
+  useEffect(() => {
+    if (!visible) return;
+    setQuery("");
+    setError(null);
+    setPendingId(null);
+    overlay.setValue(0);
+    sheetY.setValue(SCREEN_H);
+    Animated.parallel([
+      Animated.timing(overlay, { toValue: 1, duration: 220, useNativeDriver: true }),
+      Animated.spring(sheetY, { toValue: 0, tension: 70, friction: 13, useNativeDriver: true }),
+    ]).start();
+  }, [visible]);
 
-  const otherChains = chains.filter((c) => !FEATURED_CHAIN_IDS.includes(c.id));
+  const close = () => {
+    Animated.parallel([
+      Animated.timing(overlay, { toValue: 0, duration: 180, useNativeDriver: true }),
+      Animated.timing(sheetY, {
+        toValue: SCREEN_H,
+        duration: 220,
+        easing: Easing.in(Easing.cubic),
+        useNativeDriver: true,
+      }),
+    ]).start(() => onClose());
+  };
 
-  const handleSelectChain = async (chain) => {
-    if (chain.id === activeChain.id) {
-      onClose();
-      return;
-    }
+  const select = async (chain) => {
+    if (pendingId) return;
+    Haptics.selectionAsync().catch(() => {});
+    if (chain.id === activeChain?.id) return close();
+    setError(null);
+    setPendingId(chain.id);
     try {
       await switchChain(chain);
-      onClose();
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
+      close();
     } catch (e) {
-      console.error("Error switching chain:", e);
+      setError(e?.message || `Couldn't switch to ${chain.name}`);
+    } finally {
+      setPendingId(null);
     }
   };
 
-  const styles = createStyles({
-    COLORS,
-    SPACING,
-    FONTS,
-    BORDER_RADIUS,
-    SHADOWS,
-  });
-
-  const ChainIcon = ({ uri, name, size = 36 }) => {
-    const [err, setErr] = useState(false);
-    if (!uri || err) {
-      return (
-        <View
-          style={[
-            styles.iconFallback,
-            { width: size, height: size, borderRadius: size / 2 },
-          ]}
-        >
-          <Text style={styles.iconFallbackText}>{name?.[0] ?? "?"}</Text>
-        </View>
+  // ── List data ───────────────────────────────────────────────────────────────
+  const rows = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    if (q) {
+      const hits = chains.filter(
+        (c) =>
+          c.name.toLowerCase().includes(q) ||
+          c.symbol?.toLowerCase().includes(q) ||
+          String(c.id) === q,
       );
+      return hits.map((c) => ({ type: "row", chain: c, key: `r-${c.id}` }));
     }
-    return (
-      <Image
-        source={{ uri, cache: "force-cache" }}
-        style={{ width: size, height: size, borderRadius: size / 2 }}
-        onError={() => setErr(true)}
-        fadeDuration={0}
-      />
-    );
-  };
 
-  const FeaturedCard = ({ chain }) => {
-    const isSelected = chain.id === activeChain?.id;
-    const isPrimary = chain.id === DEFAULT_CHAIN.id;
+    const featured = FEATURED_IDS.map((id) => chains.find((c) => c.id === id)).filter(Boolean);
+    const rest = chains.filter((c) => !FEATURED_IDS.includes(c.id));
+    const mainnets = rest.filter((c) => !c.testnet);
+    const testnets = rest.filter((c) => c.testnet);
 
+    return [
+      ...(featured.length ? [{ type: "featured", chains: featured, key: "featured" }] : []),
+      ...(mainnets.length ? [{ type: "header", title: "All networks", key: "h-all" }] : []),
+      ...mainnets.map((c) => ({ type: "row", chain: c, key: `r-${c.id}` })),
+      ...(testnets.length ? [{ type: "header", title: "Testnets", key: "h-test" }] : []),
+      ...testnets.map((c) => ({ type: "row", chain: c, key: `r-${c.id}` })),
+    ];
+  }, [chains, query]);
+
+  // ── Renderers ───────────────────────────────────────────────────────────────
+  const Tile = ({ chain }) => {
+    const selected = chain.id === activeChain?.id;
+    const pending = chain.id === pendingId;
     return (
-      <TouchableOpacity
-        onPress={() => handleSelectChain(chain)}
-        activeOpacity={0.75}
-        style={{ flex: 1 }}
+      <Pressable
+        onPress={() => select(chain)}
+        style={({ pressed }) => [
+          styles.tile,
+          selected && styles.tileSelected,
+          pressed && { transform: [{ scale: 0.97 }] },
+        ]}
       >
-        <View
-          style={[
-            styles.featuredCard,
-            isSelected && { borderColor: COLORS.primary, borderWidth: 2 },
-          ]}
-        >
-          {isSelected && (
-            <View style={styles.featuredSelectedBadge}>
-              <Text style={styles.checkmark}>✓</Text>
-            </View>
-          )}
-          {isPrimary && (
-            <View style={styles.primaryLabel}>
-              <Text style={styles.primaryLabelText}>Primary</Text>
-            </View>
-          )}
-          <ChainIcon uri={chain.icon} name={chain.name} size={48} />
-          <Text
-            style={[
-              styles.featuredName,
-              isSelected && { color: COLORS.primary },
-            ]}
-            numberOfLines={1}
-          >
-            {chain.name}
-          </Text>
-          <Text style={styles.featuredSymbol}>{chain.symbol}</Text>
-        </View>
-      </TouchableOpacity>
-    );
-  };
-
-  const ChainRow = ({ chain }) => {
-    const isSelected = chain.id === activeChain?.id;
-    return (
-      <TouchableOpacity
-        onPress={() => handleSelectChain(chain)}
-        activeOpacity={0.7}
-      >
-        <View
-          style={[styles.chainItem, isSelected && styles.chainItemSelected]}
-        >
-          <View style={styles.chainLeft}>
-            <ChainIcon uri={chain.icon} name={chain.name} size={32} />
-            <View style={styles.chainInfo}>
-              <View style={styles.chainNameRow}>
-                <Text
-                  style={[
-                    styles.chainName,
-                    isSelected && { color: COLORS.primary },
-                  ]}
-                >
-                  {chain.name}
-                </Text>
-                {chain.testnet && (
-                  <View style={styles.testnetBadge}>
-                    <Text style={styles.testnetText}>TEST</Text>
-                  </View>
-                )}
-              </View>
-              <Text style={styles.chainSymbol}>{chain.symbol}</Text>
-            </View>
+        <ChainIcon uri={chain.icon} name={chain.name} size={34} COLORS={COLORS} />
+        <Text style={styles.tileName} numberOfLines={1}>
+          {chain.name.replace(" Chain", "")}
+        </Text>
+        {pending ? (
+          <ActivityIndicator size="small" color={COLORS.text} style={styles.tileCorner} />
+        ) : selected ? (
+          <View style={[styles.check, styles.tileCorner]}>
+            <Ionicons name="checkmark" size={11} color="#000" />
           </View>
-          {isSelected && (
-            <View style={styles.selectedBadge}>
-              <Text style={styles.checkmark}>✓</Text>
-            </View>
-          )}
-        </View>
-      </TouchableOpacity>
+        ) : null}
+      </Pressable>
     );
   };
 
-  // Build a flat data array for FlatList so we avoid SectionList layout quirks
-  const listData = [
-    { type: "sectionHeader", title: "Main Networks", key: "header-main" },
-    { type: "featuredRow", chains: featuredChains, key: "featured-row" },
-    ...(otherChains.length > 0
-      ? [
-          {
-            type: "sectionHeader",
-            title: "Other EVM Chains",
-            key: "header-evm",
-          },
-          ...otherChains.map((c) => ({
-            type: "chainRow",
-            chain: c,
-            key: `chain-${c.id}`,
-          })),
-        ]
-      : []),
-  ];
+  const Row = ({ chain }) => {
+    const selected = chain.id === activeChain?.id;
+    const pending = chain.id === pendingId;
+    return (
+      <Pressable
+        onPress={() => select(chain)}
+        style={({ pressed }) => [
+          styles.row,
+          selected && styles.rowSelected,
+          pressed && !selected && { backgroundColor: COLORS.cardElevated },
+        ]}
+      >
+        <ChainIcon uri={chain.icon} name={chain.name} size={36} COLORS={COLORS} />
+        <View style={styles.rowText}>
+          <View style={styles.rowTitleLine}>
+            <Text style={styles.rowName} numberOfLines={1}>
+              {chain.name}
+            </Text>
+            {chain.testnet ? (
+              <View style={styles.testBadge}>
+                <Text style={styles.testText}>TESTNET</Text>
+              </View>
+            ) : null}
+          </View>
+          <Text style={styles.rowSub}>
+            {chain.symbol} · Chain ID {chain.id}
+          </Text>
+        </View>
+        {pending ? (
+          <ActivityIndicator size="small" color={COLORS.text} />
+        ) : selected ? (
+          <View style={styles.check}>
+            <Ionicons name="checkmark" size={13} color="#000" />
+          </View>
+        ) : (
+          <View style={styles.radio} />
+        )}
+      </Pressable>
+    );
+  };
 
   const renderItem = ({ item }) => {
-    if (item.type === "sectionHeader") {
+    if (item.type === "featured") {
       return (
-        <View style={styles.sectionHeader}>
-          <View style={styles.sectionHeaderLine} />
-          <Text style={styles.sectionHeaderText}>{item.title}</Text>
-          <View style={styles.sectionHeaderLine} />
-        </View>
-      );
-    }
-    if (item.type === "featuredRow") {
-      return (
-        <View style={styles.featuredRow}>
+        <View style={styles.tiles}>
           {item.chains.map((c) => (
-            <FeaturedCard key={c.id} chain={c} />
+            <Tile key={c.id} chain={c} />
           ))}
         </View>
       );
     }
-    return <ChainRow chain={item.chain} />;
+    if (item.type === "header") {
+      return <Text style={styles.sectionTitle}>{item.title}</Text>;
+    }
+    return <Row chain={item.chain} />;
   };
 
   return (
     <Modal
       visible={visible}
       transparent
-      animationType="slide"
-      onRequestClose={onClose}
+      animationType="none"
+      statusBarTranslucent
+      navigationBarTranslucent
+      onRequestClose={close}
     >
-      <TouchableOpacity
-        style={styles.modalOverlay}
-        activeOpacity={1}
-        onPress={onClose}
+      <Animated.View style={[styles.backdrop, { opacity: overlay }]}>
+        <Pressable style={StyleSheet.absoluteFill} onPress={close} />
+      </Animated.View>
+
+      <Animated.View
+        style={[
+          styles.sheet,
+          { paddingBottom: insets.bottom + 12, transform: [{ translateY: sheetY }] },
+        ]}
       >
-        <TouchableOpacity
-          activeOpacity={1}
-          style={styles.modalContent}
-          onPress={(e) => e.stopPropagation()}
-        >
-          {/* Header */}
-          <View style={styles.header}>
-            <View>
-              <Text style={styles.title}>Select Network</Text>
-              <Text style={styles.subtitle}>
-                {chains.length} networks available
+        <View style={styles.grabber} />
+
+        {/* Header */}
+        <View style={styles.header}>
+          <Text style={styles.title}>Select network</Text>
+          <Pressable onPress={close} style={styles.closeBtn} hitSlop={8}>
+            <Ionicons name="close" size={20} color={COLORS.text} />
+          </Pressable>
+        </View>
+
+        {/* Connected network */}
+        {activeChain ? (
+          <View style={styles.current}>
+            <ChainIcon uri={activeChain.icon} name={activeChain.name} size={40} COLORS={COLORS} />
+            <View style={{ flex: 1 }}>
+              <View style={styles.connectedLine}>
+                <View style={styles.dot} />
+                <Text style={styles.connectedText}>Connected</Text>
+              </View>
+              <Text style={styles.currentName} numberOfLines={1}>
+                {activeChain.name}
               </Text>
             </View>
-            <TouchableOpacity onPress={onClose} style={styles.closeButton}>
-              <Text style={styles.closeText}>✕</Text>
-            </TouchableOpacity>
+            <View style={styles.symbolPill}>
+              <Text style={styles.symbolText}>{activeChain.symbol}</Text>
+            </View>
           </View>
+        ) : null}
 
-          <FlatList
-            data={listData}
-            keyExtractor={(item) => item.key}
-            renderItem={renderItem}
-            contentContainerStyle={styles.listContent}
-            showsVerticalScrollIndicator={false}
+        {/* Search */}
+        <View style={styles.search}>
+          <Ionicons name="search" size={17} color={COLORS.textTertiary} />
+          <TextInput
+            value={query}
+            onChangeText={setQuery}
+            placeholder="Search networks"
+            placeholderTextColor={COLORS.textTertiary}
+            style={styles.searchInput}
+            autoCorrect={false}
+            autoCapitalize="none"
+            returnKeyType="search"
           />
-        </TouchableOpacity>
-      </TouchableOpacity>
+          {query ? (
+            <Pressable onPress={() => setQuery("")} hitSlop={8}>
+              <Ionicons name="close-circle" size={17} color={COLORS.textTertiary} />
+            </Pressable>
+          ) : null}
+        </View>
+
+        {error ? (
+          <View style={styles.error}>
+            <Ionicons name="alert-circle" size={15} color={COLORS.error} />
+            <Text style={styles.errorText}>{error}</Text>
+          </View>
+        ) : null}
+
+        <FlatList
+          data={rows}
+          keyExtractor={(item) => item.key}
+          renderItem={renderItem}
+          keyboardShouldPersistTaps="handled"
+          showsVerticalScrollIndicator={false}
+          contentContainerStyle={styles.list}
+          ListEmptyComponent={
+            <View style={styles.empty}>
+              <Ionicons name="globe-outline" size={28} color={COLORS.textTertiary} />
+              <Text style={styles.emptyText}>No networks match “{query}”</Text>
+            </View>
+          }
+        />
+      </Animated.View>
     </Modal>
   );
 };
 
-const createStyles = ({ COLORS, SPACING, FONTS, BORDER_RADIUS, SHADOWS }) =>
+const makeStyles = (C) =>
   StyleSheet.create({
-    modalOverlay: {
-      flex: 1,
-      backgroundColor: "rgba(0,0,0,0.6)",
-      justifyContent: "flex-end",
+    backdrop: { ...StyleSheet.absoluteFillObject, backgroundColor: "rgba(0,0,0,0.55)" },
+    sheet: {
+      position: "absolute",
+      left: 0,
+      right: 0,
+      bottom: 0,
+      maxHeight: "86%",
+      backgroundColor: C.background,
+      borderTopLeftRadius: 28,
+      borderTopRightRadius: 28,
+      paddingTop: 8,
     },
-    modalContent: {
-      backgroundColor: COLORS.card,
-      borderTopLeftRadius: BORDER_RADIUS.xxl,
-      borderTopRightRadius: BORDER_RADIUS.xxl,
-      maxHeight: "75%",
-      paddingTop: SPACING.lg,
-      ...SHADOWS.xl,
+    grabber: {
+      alignSelf: "center",
+      width: 40,
+      height: 5,
+      borderRadius: 3,
+      backgroundColor: C.borderStrong,
+      marginBottom: 8,
     },
     header: {
       flexDirection: "row",
+      alignItems: "center",
       justifyContent: "space-between",
-      alignItems: "flex-start",
-      paddingHorizontal: SPACING.lg,
-      paddingBottom: SPACING.md,
-      borderBottomWidth: 1,
-      borderBottomColor: COLORS.border,
+      paddingHorizontal: 20,
+      paddingVertical: 8,
     },
-    title: {
-      fontSize: FONTS.sizes.xl,
-      fontWeight: "bold",
-      color: COLORS.text,
-    },
-    subtitle: {
-      fontSize: FONTS.sizes.sm,
-      color: COLORS.textSecondary,
-      marginTop: SPACING.xs,
-    },
-    closeButton: {
-      width: 32,
-      height: 32,
-      borderRadius: BORDER_RADIUS.round,
-      backgroundColor: COLORS.surface,
-      justifyContent: "center",
+    title: { fontSize: 22, fontWeight: "800", color: C.text, letterSpacing: -0.4 },
+    closeBtn: {
+      width: 36,
+      height: 36,
+      borderRadius: 18,
+      backgroundColor: C.surface,
       alignItems: "center",
-    },
-    closeText: {
-      fontSize: FONTS.sizes.xl,
-      color: COLORS.textSecondary,
-      fontWeight: "300",
-    },
-    listContent: {
-      paddingHorizontal: SPACING.lg,
-      paddingTop: SPACING.sm,
-      paddingBottom: SPACING.xl,
+      justifyContent: "center",
     },
 
-    // ── Section header ──────────────────────────────────────────────────────
-    sectionHeader: {
+    current: {
       flexDirection: "row",
       alignItems: "center",
-      gap: SPACING.sm,
-      marginTop: SPACING.md,
-      marginBottom: SPACING.sm,
-    },
-    sectionHeaderLine: {
-      flex: 1,
-      height: 1,
-      backgroundColor: COLORS.border,
-    },
-    sectionHeaderText: {
-      fontSize: FONTS.sizes.xs,
-      fontWeight: "700",
-      color: COLORS.textSecondary,
-      textTransform: "uppercase",
-      letterSpacing: 1,
-    },
-
-    // ── Featured row ────────────────────────────────────────────────────────
-    featuredRow: {
-      flexDirection: "row",
-      gap: SPACING.sm,
-      marginBottom: SPACING.xs,
-    },
-    featuredCard: {
-      flex: 1,
-      alignItems: "center",
-      justifyContent: "center",
-      backgroundColor: COLORS.surface,
-      borderRadius: BORDER_RADIUS.lg,
-      paddingVertical: SPACING.md + 4,
-      paddingHorizontal: SPACING.sm,
-      borderWidth: 2,
-      borderColor: "transparent",
-      position: "relative",
-      minHeight: 120,
-    },
-    featuredSelectedBadge: {
-      position: "absolute",
-      top: 8,
-      right: 8,
-      width: 20,
-      height: 20,
-      borderRadius: 10,
-      backgroundColor: COLORS.primary,
-      justifyContent: "center",
-      alignItems: "center",
-    },
-    primaryLabel: {
-      position: "absolute",
-      top: 8,
-      left: 8,
-      backgroundColor: COLORS.primary + "22",
-      borderRadius: 6,
-      paddingHorizontal: 6,
-      paddingVertical: 2,
+      gap: 12,
+      marginHorizontal: 16,
+      marginTop: 6,
+      padding: 14,
+      borderRadius: 20,
+      backgroundColor: C.primaryMuted,
       borderWidth: 1,
-      borderColor: COLORS.primary + "44",
+      borderColor: C.primary + "55",
     },
-    primaryLabelText: {
-      fontSize: 9,
-      fontWeight: "700",
-      color: COLORS.primary,
+    connectedLine: { flexDirection: "row", alignItems: "center", gap: 6 },
+    dot: { width: 7, height: 7, borderRadius: 4, backgroundColor: C.success },
+    connectedText: { fontSize: 12, fontWeight: "700", color: C.textSecondary },
+    currentName: { fontSize: 17, fontWeight: "800", color: C.text, marginTop: 2 },
+    symbolPill: {
+      paddingHorizontal: 10,
+      paddingVertical: 5,
+      borderRadius: 999,
+      backgroundColor: C.background,
+    },
+    symbolText: { fontSize: 12, fontWeight: "800", color: C.text },
+
+    search: {
+      flexDirection: "row",
+      alignItems: "center",
+      gap: 8,
+      marginHorizontal: 16,
+      marginTop: 14,
+      marginBottom: 6,
+      paddingHorizontal: 14,
+      height: 46,
+      borderRadius: 14,
+      backgroundColor: C.surface,
+      borderWidth: 1,
+      borderColor: C.border,
+    },
+    searchInput: { flex: 1, fontSize: 15, color: C.text, paddingVertical: 0 },
+
+    error: {
+      flexDirection: "row",
+      alignItems: "center",
+      gap: 8,
+      marginHorizontal: 16,
+      marginTop: 6,
+      padding: 10,
+      borderRadius: 12,
+      backgroundColor: C.error + "14",
+    },
+    errorText: { flex: 1, fontSize: 13, color: C.error },
+
+    list: { paddingHorizontal: 16, paddingTop: 8, paddingBottom: 8 },
+    sectionTitle: {
+      fontSize: 12,
+      fontWeight: "800",
+      color: C.textTertiary,
       textTransform: "uppercase",
-      letterSpacing: 0.5,
-    },
-    featuredName: {
-      fontSize: FONTS.sizes.sm,
-      fontWeight: "700",
-      color: COLORS.text,
-      marginTop: SPACING.sm,
-      textAlign: "center",
-    },
-    featuredSymbol: {
-      fontSize: FONTS.sizes.xs,
-      color: COLORS.textSecondary,
-      fontWeight: "500",
-      marginTop: 2,
-      textTransform: "uppercase",
-      letterSpacing: 0.5,
+      letterSpacing: 0.8,
+      marginTop: 16,
+      marginBottom: 8,
+      marginLeft: 4,
     },
 
-    // ── Regular chain row ───────────────────────────────────────────────────
-    chainItem: {
+    tiles: { flexDirection: "row", gap: 8, marginTop: 4 },
+    tile: {
+      flex: 1,
+      alignItems: "center",
+      gap: 8,
+      paddingVertical: 14,
+      paddingHorizontal: 4,
+      borderRadius: 18,
+      backgroundColor: C.surface,
+      borderWidth: 1.5,
+      borderColor: C.border,
+    },
+    tileSelected: { borderColor: C.primary, backgroundColor: C.primaryMuted },
+    tileName: { fontSize: 12, fontWeight: "700", color: C.text, maxWidth: "100%" },
+    tileCorner: { position: "absolute", top: 6, right: 6 },
+
+    row: {
       flexDirection: "row",
       alignItems: "center",
-      justifyContent: "space-between",
-      backgroundColor: COLORS.surface,
-      paddingVertical: SPACING.sm,
-      paddingHorizontal: SPACING.md,
-      borderRadius: BORDER_RADIUS.md,
-      marginBottom: SPACING.xs,
-      borderWidth: 2,
+      gap: 12,
+      paddingVertical: 11,
+      paddingHorizontal: 12,
+      borderRadius: 16,
+      marginBottom: 4,
+      borderWidth: 1.5,
       borderColor: "transparent",
     },
-    chainItemSelected: {
-      borderColor: COLORS.primary,
-      backgroundColor: COLORS.cardElevated,
+    rowSelected: { backgroundColor: C.primaryMuted, borderColor: C.primary },
+    rowText: { flex: 1, minWidth: 0 },
+    rowTitleLine: { flexDirection: "row", alignItems: "center", gap: 8 },
+    rowName: { fontSize: 15, fontWeight: "700", color: C.text, flexShrink: 1 },
+    rowSub: { fontSize: 12, color: C.textTertiary, marginTop: 2 },
+    testBadge: {
+      paddingHorizontal: 6,
+      paddingVertical: 1,
+      borderRadius: 6,
+      backgroundColor: C.warning + "22",
     },
-    chainLeft: {
-      flexDirection: "row",
-      alignItems: "center",
-      flex: 1,
-    },
-    iconFallback: {
-      backgroundColor: COLORS.primary,
-      justifyContent: "center",
-      alignItems: "center",
-    },
-    iconFallbackText: {
-      color: COLORS.surface,
-      fontSize: FONTS.sizes.md,
-      fontWeight: "bold",
-    },
-    chainInfo: {
-      flex: 1,
-      marginLeft: SPACING.md,
-    },
-    chainNameRow: {
-      flexDirection: "row",
-      alignItems: "center",
-      gap: SPACING.sm,
-    },
-    chainName: {
-      fontSize: FONTS.sizes.md,
-      fontWeight: "600",
-      color: COLORS.text,
-    },
-    chainSymbol: {
-      fontSize: FONTS.sizes.xs,
-      color: COLORS.textSecondary,
-      marginTop: 2,
-    },
-    testnetBadge: {
-      backgroundColor: COLORS.warning,
-      paddingHorizontal: SPACING.sm,
-      paddingVertical: 2,
-      borderRadius: SPACING.xs,
-    },
-    testnetText: {
-      fontSize: FONTS.sizes.xs,
-      color: COLORS.surface,
-      fontWeight: "bold",
-    },
-    selectedBadge: {
+    testText: { fontSize: 9, fontWeight: "800", color: C.warning, letterSpacing: 0.5 },
+    check: {
       width: 22,
       height: 22,
-      borderRadius: BORDER_RADIUS.round,
-      backgroundColor: COLORS.primary,
-      justifyContent: "center",
+      borderRadius: 11,
+      backgroundColor: C.primary,
       alignItems: "center",
-      marginLeft: SPACING.sm,
+      justifyContent: "center",
     },
-    checkmark: {
-      fontSize: FONTS.sizes.sm,
-      color: COLORS.surface,
-      fontWeight: "bold",
+    radio: {
+      width: 22,
+      height: 22,
+      borderRadius: 11,
+      borderWidth: 1.5,
+      borderColor: C.borderStrong,
     },
+
+    empty: { alignItems: "center", paddingVertical: 36, gap: 10 },
+    emptyText: { fontSize: 14, color: C.textSecondary },
   });
 
-export default ChainSwitcherInner;
+export default ChainSwitcher;

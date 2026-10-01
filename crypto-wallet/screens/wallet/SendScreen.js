@@ -11,6 +11,7 @@ import {
   FlatList,
   ActivityIndicator,
   Image,
+  TextInput,
   Animated,
 } from "react-native";
 import { useWallet } from "../../contexts/WalletContext";
@@ -44,10 +45,11 @@ const ERC20_ABI = [
 
 const API_BASE_URL = API_CONFIG.BASE_URL;
 
+// Email send is disabled for now — only on-chain address and username
+// (resolved through the same backend identity lookup) remain.
 const RECIPIENT_MODES = [
   { key: "address", label: "Address", icon: "hash" },
   { key: "username", label: "Username", icon: "at-sign" },
-  { key: "email", label: "Email", icon: "mail" },
 ];
 
 const resolveIdentity = async (emailOrUsername) => {
@@ -383,10 +385,9 @@ const SendScreen = ({ navigation, route }) => {
 
     if (!selectedToken) newErrors.token = "Please select a token";
 
-    if (recipientMode !== "address") {
+    if (recipientMode === "username") {
       if (!recipient.trim()) {
-        newErrors.recipient =
-          recipientMode === "username" ? "Enter a username" : "Enter an email";
+        newErrors.recipient = "Enter a username";
       } else if (resolving) {
         newErrors.recipient = "Still resolving identity…";
       } else if (!resolvedAddress) {
@@ -510,6 +511,15 @@ const SendScreen = ({ navigation, route }) => {
       ? formatAddress(recipient, 10)
       : `${recipient} (${formatAddress(resolvedAddress || "", 8)})`;
 
+  const canSubmit =
+    selectedToken &&
+    recipient &&
+    amount &&
+    !errors.gas &&
+    !estimatingGas &&
+    !resolving &&
+    (recipientMode !== "username" || !!resolvedAddress);
+
   // ── Render helpers ─────────────────────────────────────────────────────────
 
   const renderTokenItem = ({ item }) => {
@@ -613,35 +623,27 @@ const SendScreen = ({ navigation, route }) => {
       >
         {/* ── Header ── */}
         <View style={styles.header}>
+          <TouchableOpacity
+            onPress={() => navigation.goBack()}
+            style={styles.backButton}
+            hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+          >
+            <Ionicons name="arrow-back" size={20} color={theme.COLORS.text} />
+          </TouchableOpacity>
           <Text style={styles.headerTitle}>Send</Text>
-          <View style={styles.headerRight}>
-            {/* Subtle background-refresh indicator */}
+          <TouchableOpacity
+            style={styles.networkPill}
+            onPress={() => setShowChainSwitcher(true)}
+            activeOpacity={0.7}
+          >
             {refreshingBalances && (
-              <ActivityIndicator
-                size="small"
-                color={theme.COLORS.textSecondary}
-                style={styles.refreshIndicator}
-              />
+              <ActivityIndicator size="small" color={theme.COLORS.textSecondary} />
             )}
-            <TouchableOpacity
-              style={styles.networkButton}
-              onPress={() => setShowChainSwitcher(true)}
-              activeOpacity={0.7}
-            >
-              {activeChain.icon && (
-                <Image
-                  source={{ uri: activeChain.icon }}
-                  style={styles.networkIcon}
-                />
-              )}
-              <Text style={styles.networkText}>{activeChain.name}</Text>
-              <Feather
-                name="chevron-down"
-                size={12}
-                color={theme.COLORS.textSecondary}
-              />
-            </TouchableOpacity>
-          </View>
+            {activeChain.icon && (
+              <Image source={{ uri: activeChain.icon }} style={styles.networkIcon} />
+            )}
+            <Feather name="chevron-down" size={12} color={theme.COLORS.textSecondary} />
+          </TouchableOpacity>
         </View>
 
         {/* ── Empty State ── */}
@@ -665,172 +667,148 @@ const SendScreen = ({ navigation, route }) => {
 
         {availableTokens.length > 0 && (
           <>
-            {/* ── Token Selector ── */}
-            <View style={styles.section}>
-              <View style={styles.sectionHeader}>
-                <Text style={styles.sectionLabel}>Token</Text>
-                <Text style={styles.sectionHint}>
-                  {availableTokens.length} available
-                </Text>
+            {/* ── Hero: amount + token ── */}
+            <View style={styles.heroCard}>
+              <View style={styles.heroTopRow}>
+                <Text style={styles.heroLabel}>You're sending</Text>
+                <TouchableOpacity onPress={setMaxAmount} disabled={!selectedToken}>
+                  <View style={styles.maxChip}>
+                    <Text style={styles.maxChipText}>MAX</Text>
+                  </View>
+                </TouchableOpacity>
               </View>
-              <TouchableOpacity
-                style={styles.tokenSelector}
-                onPress={() => setShowTokenSelector(true)}
-                activeOpacity={0.7}
-              >
-                {selectedToken ? (
-                  <>
-                    <View style={styles.tokenSelectorLeft}>
-                      <View style={styles.tokenIconOuterWrap}>
-                        {selectedToken.logo ? (
-                          <Image
-                            source={{ uri: selectedToken.logo }}
-                            style={styles.selectedTokenLogo}
-                          />
-                        ) : (
-                          <View
-                            style={[
-                              styles.tokenIcon,
-                              selectedToken.isNative && styles.tokenIconNative,
-                            ]}
-                          >
-                            <Text style={styles.tokenIconText}>
-                              {selectedToken.symbol.substring(0, 2)}
-                            </Text>
-                          </View>
-                        )}
-                        {!selectedToken.isNative && (
-                          <ChainBadge
-                            uri={activeChain?.icon}
-                            borderColor={theme.COLORS.background}
-                          />
-                        )}
-                      </View>
-                      <View>
-                        <Text style={styles.selectedTokenSymbol}>
-                          {selectedToken.symbol}
-                        </Text>
-                        <Text style={styles.selectedTokenBalance}>
-                          {parseFloat(selectedToken.balance).toFixed(4)}{" "}
-                          available
-                        </Text>
-                      </View>
+
+              <View style={styles.heroAmountRow}>
+                <TextInput
+                  value={amount}
+                  onChangeText={(text) => {
+                    const cleaned = text.replace(/[^0-9.]/g, "");
+                    const parts = cleaned.split(".");
+                    const formatted =
+                      parts.length > 2
+                        ? parts[0] + "." + parts.slice(1).join("")
+                        : cleaned;
+                    setAmount(formatted);
+                    if (errors.amount)
+                      setErrors((prev) => ({ ...prev, amount: null }));
+                  }}
+                  placeholder="0.0"
+                  placeholderTextColor={theme.COLORS.textTertiary}
+                  keyboardType="decimal-pad"
+                  style={styles.heroAmountInput}
+                />
+
+                <TouchableOpacity
+                  style={styles.heroTokenPill}
+                  onPress={() => setShowTokenSelector(true)}
+                  activeOpacity={0.7}
+                >
+                  {selectedToken?.logo ? (
+                    <Image
+                      source={{ uri: selectedToken.logo }}
+                      style={styles.heroTokenLogo}
+                    />
+                  ) : (
+                    <View
+                      style={[
+                        styles.tokenIcon,
+                        selectedToken?.isNative && styles.tokenIconNative,
+                      ]}
+                    >
+                      <Text style={styles.tokenIconText}>
+                        {selectedToken?.symbol?.substring(0, 2) || "?"}
+                      </Text>
                     </View>
-                    <Ionicons
-                      name="chevron-down"
-                      size={20}
-                      color={theme.COLORS.textSecondary}
-                    />
-                  </>
-                ) : (
-                  <>
-                    <Text style={styles.selectorPlaceholder}>Select token</Text>
-                    <Ionicons
-                      name="chevron-down"
-                      size={20}
-                      color={theme.COLORS.textSecondary}
-                    />
-                  </>
-                )}
-              </TouchableOpacity>
-              {errors.token && (
-                <Text style={styles.errorText}>{errors.token}</Text>
+                  )}
+                  <Text style={styles.heroTokenSymbol}>
+                    {selectedToken?.symbol || "Select"}
+                  </Text>
+                  <Ionicons
+                    name="chevron-down"
+                    size={14}
+                    color={theme.COLORS.textSecondary}
+                  />
+                </TouchableOpacity>
+              </View>
+
+              <Text style={styles.heroBalanceHint}>
+                {selectedToken
+                  ? `${parseFloat(selectedToken.balance).toFixed(4)} ${selectedToken.symbol} available`
+                  : "Select a token to see your balance"}
+              </Text>
+
+              {(errors.token || errors.amount) && (
+                <Text style={styles.heroErrorText}>
+                  {errors.token || errors.amount}
+                </Text>
               )}
             </View>
 
             {/* ── Recipient ── */}
-            <View style={styles.section}>
-              <View style={styles.sectionHeader}>
-                <Text style={styles.sectionLabel}>Recipient</Text>
-                {recipientMode === "address" && (
-                  <TouchableOpacity
-                    onPress={() => setShowQRScanner(true)}
-                    style={styles.iconButton}
-                  >
-                    <Ionicons
-                      name="scan-outline"
-                      size={16}
-                      color={theme.COLORS.primary}
-                    />
-                  </TouchableOpacity>
-                )}
-              </View>
-
-              {/* Mode toggle pills */}
-              <View style={styles.modeToggle}>
-                {RECIPIENT_MODES.map((mode) => {
-                  const active = recipientMode === mode.key;
-                  return (
-                    <TouchableOpacity
-                      key={mode.key}
-                      style={[
-                        styles.modePill,
-                        active && {
-                          backgroundColor: theme.COLORS.primary,
-                          borderColor: theme.COLORS.primary,
-                        },
-                      ]}
-                      onPress={() => switchMode(mode.key)}
-                      activeOpacity={0.75}
-                    >
-                      <Feather
-                        name={mode.icon}
-                        size={12}
-                        color={
-                          active
-                            ? theme.COLORS.background
-                            : theme.COLORS.textSecondary
-                        }
-                      />
-                      <Text
-                        style={[
-                          styles.modePillLabel,
-                          {
-                            color: active
-                              ? theme.COLORS.background
-                              : theme.COLORS.textSecondary,
-                          },
-                        ]}
+            <View style={styles.card}>
+              <View style={styles.cardHeaderRow}>
+                <View style={styles.modeToggle}>
+                  {RECIPIENT_MODES.map((mode) => {
+                    const active = recipientMode === mode.key;
+                    return (
+                      <TouchableOpacity
+                        key={mode.key}
+                        style={[styles.modePill, active && styles.modePillActive]}
+                        onPress={() => switchMode(mode.key)}
+                        activeOpacity={0.75}
                       >
-                        {mode.label}
-                      </Text>
-                    </TouchableOpacity>
-                  );
-                })}
+                        <Feather
+                          name={mode.icon}
+                          size={11}
+                          color={
+                            active ? theme.COLORS.background : theme.COLORS.textSecondary
+                          }
+                        />
+                        <Text
+                          style={[
+                            styles.modePillLabel,
+                            {
+                              color: active
+                                ? theme.COLORS.background
+                                : theme.COLORS.textSecondary,
+                            },
+                          ]}
+                        >
+                          {mode.label}
+                        </Text>
+                      </TouchableOpacity>
+                    );
+                  })}
+                </View>
               </View>
 
-              {/* Input */}
-              <View style={styles.recipientInputWrapper}>
-                <Input
-                  value={recipient}
-                  onChangeText={(text) => {
-                    setRecipient(text);
-                    if (errors.recipient)
-                      setErrors((prev) => ({ ...prev, recipient: null }));
-                  }}
-                  placeholder={
-                    recipientMode === "address"
-                      ? "0x... or ENS name"
-                      : recipientMode === "username"
-                        ? "@username"
-                        : "user@example.com"
-                  }
-                  error={errors.recipient || resolveError}
-                  autoCapitalize="none"
-                  keyboardType={
-                    recipientMode === "email" ? "email-address" : "default"
-                  }
-                  containerStyle={styles.inputContainer}
-                />
-                {resolving && (
-                  <View style={styles.resolveSpinner}>
-                    <ActivityIndicator
-                      size="small"
-                      color={theme.COLORS.primary}
-                    />
-                  </View>
-                )}
-              </View>
+              <Input
+                value={recipient}
+                onChangeText={(text) => {
+                  setRecipient(text);
+                  if (errors.recipient)
+                    setErrors((prev) => ({ ...prev, recipient: null }));
+                }}
+                placeholder={
+                  recipientMode === "address" ? "0x... or ENS name" : "@username"
+                }
+                error={errors.recipient || resolveError}
+                autoCapitalize="none"
+                style={styles.recipientInputContainer}
+                rightIcon={
+                  recipientMode === "address" ? (
+                    <TouchableOpacity onPress={() => setShowQRScanner(true)}>
+                      <Ionicons
+                        name="scan-outline"
+                        size={18}
+                        color={theme.COLORS.primary}
+                      />
+                    </TouchableOpacity>
+                  ) : resolving ? (
+                    <ActivityIndicator size="small" color={theme.COLORS.primary} />
+                  ) : undefined
+                }
+              />
 
               {/* Resolved address chip */}
               {resolvedAddress && recipientMode !== "address" && (
@@ -873,158 +851,76 @@ const SendScreen = ({ navigation, route }) => {
               )}
             </View>
 
-            {/* ── Amount ── */}
-            <View style={styles.section}>
-              <View style={styles.sectionHeader}>
-                <Text style={styles.sectionLabel}>Amount</Text>
-                <TouchableOpacity
-                  onPress={setMaxAmount}
-                  disabled={!selectedToken}
-                >
-                  <Text style={styles.maxButton}>MAX</Text>
-                </TouchableOpacity>
+            {/* ── Review (fee + total, one unified card) ── */}
+            <View style={styles.card}>
+              <Text style={styles.cardTitle}>Review</Text>
+
+              <View style={styles.reviewRow}>
+                <Text style={styles.reviewLabel}>Network</Text>
+                <View style={styles.reviewNetworkValue}>
+                  {activeChain.icon && (
+                    <Image source={{ uri: activeChain.icon }} style={styles.reviewNetworkIcon} />
+                  )}
+                  <Text style={styles.reviewValue}>{activeChain.name}</Text>
+                </View>
               </View>
-              <View style={styles.amountInputWrapper}>
-                <Input
-                  value={amount}
-                  onChangeText={(text) => {
-                    const cleaned = text.replace(/[^0-9.]/g, "");
-                    const parts = cleaned.split(".");
-                    const formatted =
-                      parts.length > 2
-                        ? parts[0] + "." + parts.slice(1).join("")
-                        : cleaned;
-                    setAmount(formatted);
-                    if (errors.amount)
-                      setErrors((prev) => ({ ...prev, amount: null }));
-                  }}
-                  placeholder="0.0"
-                  keyboardType="decimal-pad"
-                  error={errors.amount}
-                  containerStyle={styles.inputContainer}
-                  style={styles.amountInputText}
-                />
-                {selectedToken && (
-                  <Text style={styles.amountSymbol}>
-                    {selectedToken.symbol}
+
+              <View style={styles.reviewDivider} />
+
+              <View style={styles.reviewRow}>
+                <Text style={styles.reviewLabel}>Network fee</Text>
+                {estimatingGas ? (
+                  <View style={styles.reviewFeeLoading}>
+                    <ActivityIndicator size="small" color={theme.COLORS.primary} />
+                    <Text style={styles.reviewFeeLoadingText}>Estimating...</Text>
+                  </View>
+                ) : errors.gas ? (
+                  <Text style={styles.reviewError}>Unable to estimate</Text>
+                ) : gasEstimate ? (
+                  <Text style={styles.reviewValue}>
+                    {parseFloat(gasEstimate.totalCost).toFixed(6)} {activeChain.symbol}
                   </Text>
+                ) : (
+                  <Text style={styles.reviewValuePending}>—</Text>
                 )}
               </View>
-            </View>
 
-            {/* ── Gas Estimate ── */}
-            {estimatingGas && (
-              <View style={styles.gasLoading}>
-                <ActivityIndicator size="small" color={theme.COLORS.primary} />
-                <Text style={styles.gasLoadingText}>Estimating fee...</Text>
-              </View>
-            )}
+              {errors.gas && (
+                <Text style={styles.reviewErrorDetail}>{errors.gas}</Text>
+              )}
 
-            {gasEstimate && !errors.gas && !estimatingGas && (
-              <View style={styles.gasCard}>
-                <View style={styles.gasRow}>
-                  <Text style={styles.gasLabel}>Network Fee</Text>
-                  <View style={styles.gasRight}>
-                    <Text style={styles.gasAmount}>
-                      {parseFloat(gasEstimate.totalCost).toFixed(6)}{" "}
-                      {activeChain.symbol}
-                    </Text>
-                  </View>
-                </View>
-                <View style={styles.gasDivider} />
-                <View style={styles.gasDetailRow}>
-                  <Text style={styles.gasDetailLabel}>Gas Price</Text>
-                  <Text style={styles.gasDetailValue}>
-                    {parseFloat(gasEstimate.gasPriceGwei).toFixed(2)} Gwei
-                  </Text>
-                </View>
-                <View style={styles.gasDetailRow}>
-                  <Text style={styles.gasDetailLabel}>Gas Limit</Text>
-                  <Text style={styles.gasDetailValue}>
-                    {gasEstimate.gasLimit.toLocaleString()}
-                  </Text>
-                </View>
-              </View>
-            )}
-
-            {errors.gas && (
-              <View style={styles.errorCard}>
-                <Ionicons
-                  name="alert-circle-outline"
-                  size={16}
-                  color={theme.COLORS.error}
-                />
-                <Text style={styles.errorCardText}>{errors.gas}</Text>
-              </View>
-            )}
-
-            {/* ── Total Summary ── */}
-            {gasEstimate &&
-              amount &&
-              selectedToken &&
-              !errors.gas &&
-              !estimatingGas && (
-                <View style={styles.summaryCard}>
-                  <View style={styles.summaryRow}>
-                    <Text style={styles.summaryLabel}>You send</Text>
-                    <Text style={styles.summaryValue}>
-                      {amount} {selectedToken.symbol}
-                    </Text>
-                  </View>
-                  {recipientMode !== "address" && resolvedAddress && (
-                    <View style={styles.summaryRow}>
-                      <Text style={styles.summaryLabel}>To wallet</Text>
-                      <Text style={[styles.summaryValue, styles.summaryMono]}>
-                        {formatAddress(resolvedAddress, 10)}
-                      </Text>
-                    </View>
-                  )}
-                  <View style={styles.summaryRow}>
-                    <Text style={styles.summaryLabel}>Network fee</Text>
-                    <Text style={styles.summaryValue}>
-                      {parseFloat(gasEstimate.totalCost).toFixed(6)}{" "}
-                      {activeChain.symbol}
-                    </Text>
-                  </View>
-                  <View style={styles.summaryDivider} />
-                  <View style={styles.summaryRow}>
-                    <Text style={styles.summaryLabelTotal}>Total</Text>
-                    {selectedToken.isNative ? (
-                      <Text style={styles.summaryValueTotal}>
-                        {(
-                          parseFloat(amount) + parseFloat(gasEstimate.totalCost)
-                        ).toFixed(6)}{" "}
+              {gasEstimate && !errors.gas && !estimatingGas && amount && (
+                <>
+                  <View style={styles.reviewDivider} />
+                  <View style={styles.reviewRow}>
+                    <Text style={styles.reviewLabelTotal}>Total</Text>
+                    {selectedToken?.isNative ? (
+                      <Text style={styles.reviewValueTotal}>
+                        {(parseFloat(amount) + parseFloat(gasEstimate.totalCost)).toFixed(6)}{" "}
                         {activeChain.symbol}
                       </Text>
                     ) : (
-                      <View style={styles.summaryRight}>
-                        <Text style={styles.summaryValueTotal}>
+                      <View style={styles.reviewTotalStack}>
+                        <Text style={styles.reviewValueTotal}>
                           {amount} {selectedToken.symbol}
                         </Text>
-                        <Text style={styles.summaryValueSecondary}>
-                          + {parseFloat(gasEstimate.totalCost).toFixed(6)}{" "}
-                          {activeChain.symbol} fee
+                        <Text style={styles.reviewValueSecondary}>
+                          + {parseFloat(gasEstimate.totalCost).toFixed(6)} {activeChain.symbol} fee
                         </Text>
                       </View>
                     )}
                   </View>
-                </View>
+                </>
               )}
+            </View>
 
             <Button
-              title={estimatingGas ? "Estimating..." : "Continue"}
+              title={estimatingGas ? "Estimating..." : "Review & Send"}
               onPress={handleSend}
               loading={loading || estimatingGas}
-              disabled={
-                !selectedToken ||
-                !recipient ||
-                !amount ||
-                !!errors.gas ||
-                estimatingGas ||
-                resolving ||
-                (recipientMode !== "address" && !resolvedAddress)
-              }
+              disabled={!canSubmit}
               fullWidth
+              style={styles.submitButton}
             />
           </>
         )}
@@ -1110,26 +1006,29 @@ const createStyles = (theme) =>
 
     header: {
       flexDirection: "row",
-      justifyContent: "space-between",
       alignItems: "center",
+      justifyContent: "space-between",
       marginBottom: 20,
     },
-    headerTitle: { fontSize: 20, fontWeight: "700", color: theme.COLORS.text },
-    headerRight: { flexDirection: "row", alignItems: "center", gap: 8 },
-    refreshIndicator: { marginRight: 4 },
-    networkButton: {
+    backButton: {
+      width: 36,
+      height: 36,
+      borderRadius: 18,
+      backgroundColor: theme.COLORS.surface,
+      justifyContent: "center",
+      alignItems: "center",
+    },
+    headerTitle: { fontSize: 17, fontWeight: "700", color: theme.COLORS.text },
+    networkPill: {
       flexDirection: "row",
       alignItems: "center",
       backgroundColor: theme.COLORS.surface,
       paddingVertical: 6,
-      paddingHorizontal: 12,
+      paddingHorizontal: 10,
       borderRadius: 16,
       gap: 6,
-      borderWidth: 1,
-      borderColor: theme.COLORS.border,
     },
-    networkIcon: { width: 16, height: 16, borderRadius: 8 },
-    networkText: { fontSize: 12, fontWeight: "500", color: theme.COLORS.text },
+    networkIcon: { width: 18, height: 18, borderRadius: 9 },
 
     emptyState: {
       alignItems: "center",
@@ -1150,116 +1049,121 @@ const createStyles = (theme) =>
     },
     emptyButton: { marginTop: 8 },
 
-    section: { marginBottom: 20 },
-    sectionHeader: {
+    // ── Hero card ──
+    heroCard: {
+      backgroundColor: theme.COLORS.surface,
+      borderRadius: 20,
+      padding: 18,
+      marginBottom: 14,
+    },
+    heroTopRow: {
       flexDirection: "row",
       justifyContent: "space-between",
       alignItems: "center",
-      marginBottom: 8,
+      marginBottom: 12,
     },
-    sectionLabel: {
-      fontSize: 11,
+    heroLabel: {
+      fontSize: 12,
       fontWeight: "600",
       color: theme.COLORS.textSecondary,
-      textTransform: "uppercase",
     },
-    sectionHint: { fontSize: 11, color: theme.COLORS.textSecondary },
-    iconButton: {
-      width: 28,
-      height: 28,
-      borderRadius: 14,
-      backgroundColor: theme.COLORS.surface,
-      justifyContent: "center",
-      alignItems: "center",
-      borderWidth: 1,
-      borderColor: theme.COLORS.border,
+    maxChip: {
+      backgroundColor: theme.COLORS.primary + "20",
+      paddingHorizontal: 10,
+      paddingVertical: 4,
+      borderRadius: 10,
     },
-    maxButton: { fontSize: 11, fontWeight: "700", color: theme.COLORS.primary },
-    inputContainer: { marginBottom: 0 },
-
-    tokenSelector: {
+    maxChipText: { fontSize: 11, fontWeight: "700", color: theme.COLORS.primary },
+    heroAmountRow: {
       flexDirection: "row",
+      alignItems: "center",
       justifyContent: "space-between",
-      alignItems: "center",
-      backgroundColor: theme.COLORS.surface,
-      borderRadius: 12,
-      padding: 12,
-      borderWidth: 1,
-      borderColor: theme.COLORS.border,
+      gap: 10,
     },
-    tokenSelectorLeft: {
+    heroAmountInput: {
+      flex: 1,
+      fontSize: 36,
+      fontWeight: "700",
+      color: theme.COLORS.text,
+      padding: 0,
+    },
+    heroTokenPill: {
       flexDirection: "row",
       alignItems: "center",
-      gap: 10,
-      flex: 1,
+      gap: 6,
+      backgroundColor: theme.COLORS.background,
+      borderRadius: 20,
+      paddingVertical: 6,
+      paddingHorizontal: 10,
     },
-    selectedTokenLogo: { width: 32, height: 32, borderRadius: 16 },
+    heroTokenLogo: { width: 24, height: 24, borderRadius: 12 },
+    heroTokenSymbol: { fontSize: 14, fontWeight: "700", color: theme.COLORS.text },
+    heroBalanceHint: {
+      fontSize: 12,
+      color: theme.COLORS.textSecondary,
+      marginTop: 12,
+    },
+    heroErrorText: { fontSize: 11, color: theme.COLORS.error, marginTop: 8 },
+
     tokenIcon: {
-      width: 32,
-      height: 32,
-      borderRadius: 16,
+      width: 24,
+      height: 24,
+      borderRadius: 12,
       backgroundColor: theme.COLORS.primaryLight,
       justifyContent: "center",
       alignItems: "center",
     },
     tokenIconNative: { backgroundColor: theme.COLORS.primary },
     tokenIconText: {
-      fontSize: 12,
+      fontSize: 10,
       fontWeight: "600",
       color: theme.COLORS.background,
     },
-    selectedTokenSymbol: {
-      fontSize: 14,
-      fontWeight: "600",
-      color: theme.COLORS.text,
+
+    // ── Generic card ──
+    card: {
+      backgroundColor: theme.COLORS.surface,
+      borderRadius: 16,
+      padding: 16,
+      marginBottom: 14,
     },
-    selectedTokenBalance: {
-      fontSize: 11,
+    cardTitle: {
+      fontSize: 12,
+      fontWeight: "700",
       color: theme.COLORS.textSecondary,
-      marginTop: 2,
+      textTransform: "uppercase",
+      marginBottom: 12,
     },
-    selectorPlaceholder: { fontSize: 14, color: theme.COLORS.textSecondary },
+    cardHeaderRow: { marginBottom: 10 },
 
     modeToggle: {
       flexDirection: "row",
-      backgroundColor: theme.COLORS.surface,
+      backgroundColor: theme.COLORS.background,
       borderRadius: 10,
-      borderWidth: 1,
-      borderColor: theme.COLORS.border,
       padding: 3,
-      marginBottom: 10,
       gap: 3,
+      alignSelf: "flex-start",
     },
     modePill: {
-      flex: 1,
       flexDirection: "row",
       alignItems: "center",
       justifyContent: "center",
       gap: 5,
-      paddingVertical: 7,
+      paddingVertical: 6,
+      paddingHorizontal: 12,
       borderRadius: 8,
-      borderWidth: 1,
-      borderColor: "transparent",
     },
+    modePillActive: { backgroundColor: theme.COLORS.primary },
     modePillLabel: { fontSize: 12, fontWeight: "600" },
 
-    recipientInputWrapper: { position: "relative" },
-    resolveSpinner: {
-      position: "absolute",
-      right: 12,
-      top: 0,
-      bottom: 0,
-      justifyContent: "center",
-    },
+    recipientInputContainer: { marginBottom: 0 },
 
     resolvedChip: {
       flexDirection: "row",
       alignItems: "center",
       gap: 6,
-      marginTop: 8,
+      marginTop: 10,
       backgroundColor: theme.COLORS.success + "14",
-      borderWidth: 1,
-      borderColor: theme.COLORS.success + "35",
       borderRadius: 8,
       paddingHorizontal: 10,
       paddingVertical: 8,
@@ -1284,113 +1188,37 @@ const createStyles = (theme) =>
       fontFamily: Platform.OS === "ios" ? "Menlo" : "monospace",
     },
 
-    amountInputWrapper: { position: "relative" },
-    amountInputText: { fontSize: 20, fontWeight: "600" },
-    amountSymbol: {
-      position: "absolute",
-      right: 12,
-      top: "50%",
-      transform: [{ translateY: -10 }],
-      fontSize: 14,
-      fontWeight: "500",
-      color: theme.COLORS.textSecondary,
-    },
-
-    gasLoading: {
-      flexDirection: "row",
-      alignItems: "center",
-      backgroundColor: theme.COLORS.surface,
-      padding: 12,
-      borderRadius: 8,
-      marginBottom: 16,
-      gap: 8,
-    },
-    gasLoadingText: { fontSize: 12, color: theme.COLORS.textSecondary },
-    gasCard: {
-      backgroundColor: theme.COLORS.surface,
-      borderRadius: 12,
-      padding: 12,
-      marginBottom: 16,
-      borderWidth: 1,
-      borderColor: theme.COLORS.border,
-    },
-    gasRow: {
+    // ── Review card ──
+    reviewRow: {
       flexDirection: "row",
       justifyContent: "space-between",
-      alignItems: "flex-start",
-      marginBottom: 8,
+      alignItems: "center",
+      paddingVertical: 4,
     },
-    gasLabel: { fontSize: 13, fontWeight: "500", color: theme.COLORS.text },
-    gasRight: { alignItems: "flex-end" },
-    gasAmount: { fontSize: 14, fontWeight: "600", color: theme.COLORS.text },
-    gasDivider: {
+    reviewLabel: { fontSize: 13, color: theme.COLORS.textSecondary },
+    reviewValue: { fontSize: 13, fontWeight: "600", color: theme.COLORS.text },
+    reviewValuePending: { fontSize: 13, color: theme.COLORS.textTertiary },
+    reviewNetworkValue: { flexDirection: "row", alignItems: "center", gap: 6 },
+    reviewNetworkIcon: { width: 16, height: 16, borderRadius: 8 },
+    reviewDivider: {
       height: 1,
       backgroundColor: theme.COLORS.border,
       marginVertical: 8,
     },
-    gasDetailRow: {
-      flexDirection: "row",
-      justifyContent: "space-between",
-      marginBottom: 4,
-    },
-    gasDetailLabel: { fontSize: 11, color: theme.COLORS.textSecondary },
-    gasDetailValue: {
-      fontSize: 11,
-      color: theme.COLORS.text,
-      fontWeight: "500",
-    },
-    errorCard: {
-      flexDirection: "row",
-      alignItems: "center",
-      backgroundColor: theme.COLORS.error + "10",
-      padding: 12,
-      borderRadius: 8,
-      marginBottom: 16,
-      gap: 8,
-    },
-    errorCardText: { flex: 1, fontSize: 11, color: theme.COLORS.error },
-
-    summaryCard: {
-      backgroundColor: theme.COLORS.surface,
-      borderRadius: 12,
-      padding: 12,
-      marginBottom: 16,
-      borderWidth: 1,
-      borderColor: theme.COLORS.primary + "30",
-    },
-    summaryRow: {
-      flexDirection: "row",
-      justifyContent: "space-between",
-      marginBottom: 8,
-    },
-    summaryLabel: { fontSize: 12, color: theme.COLORS.textSecondary },
-    summaryValue: { fontSize: 12, color: theme.COLORS.text, fontWeight: "500" },
-    summaryMono: {
-      fontFamily: Platform.OS === "ios" ? "Menlo" : "monospace",
-      fontSize: 11,
-    },
-    summaryRight: { alignItems: "flex-end" },
-    summaryDivider: {
-      height: 1,
-      backgroundColor: theme.COLORS.border,
-      marginVertical: 8,
-    },
-    summaryLabelTotal: {
-      fontSize: 14,
-      fontWeight: "600",
-      color: theme.COLORS.text,
-    },
-    summaryValueTotal: {
-      fontSize: 14,
-      fontWeight: "600",
-      color: theme.COLORS.primary,
-    },
-    summaryValueSecondary: {
+    reviewFeeLoading: { flexDirection: "row", alignItems: "center", gap: 6 },
+    reviewFeeLoadingText: { fontSize: 12, color: theme.COLORS.textSecondary },
+    reviewError: { fontSize: 12, color: theme.COLORS.error, fontWeight: "600" },
+    reviewErrorDetail: { fontSize: 11, color: theme.COLORS.error, marginTop: 4 },
+    reviewLabelTotal: { fontSize: 14, fontWeight: "700", color: theme.COLORS.text },
+    reviewValueTotal: { fontSize: 14, fontWeight: "700", color: theme.COLORS.primary },
+    reviewTotalStack: { alignItems: "flex-end" },
+    reviewValueSecondary: {
       fontSize: 10,
       color: theme.COLORS.textSecondary,
       marginTop: 2,
     },
-    errorText: { fontSize: 11, color: theme.COLORS.error, marginTop: 6 },
+
+    submitButton: { marginTop: 4 },
 
     modalOverlay: {
       flex: 1,

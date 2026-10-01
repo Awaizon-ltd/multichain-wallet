@@ -237,12 +237,7 @@ const HomeScreen = ({ navigation }) => {
               color="#000"
               style={staticStyles.slantIcon}
             />
-            <Text
-              style={[
-                staticStyles.actionPrimaryLabel,
-                { color: "#000" },
-              ]}
-            >
+            <Text style={[staticStyles.actionPrimaryLabel, { color: "#000" }]}>
               Send
             </Text>
           </Pressable>
@@ -259,12 +254,7 @@ const HomeScreen = ({ navigation }) => {
               color="#000"
               style={staticStyles.slantIcon}
             />
-            <Text
-              style={[
-                staticStyles.actionPrimaryLabel,
-                { color: "#000" },
-              ]}
-            >
+            <Text style={[staticStyles.actionPrimaryLabel, { color: "#000" }]}>
               Receive
             </Text>
           </Pressable>
@@ -275,17 +265,8 @@ const HomeScreen = ({ navigation }) => {
             ]}
             onPress={() => setShowScanner(true)}
           >
-            <Ionicons
-              name="scan-outline"
-              size={30}
-              color="#000"
-            />
-            <Text
-              style={[
-                staticStyles.actionPrimaryLabel,
-                { color: "#000" },
-              ]}
-            >
+            <Ionicons name="scan-outline" size={30} color="#000" />
+            <Text style={[staticStyles.actionPrimaryLabel, { color: "#000" }]}>
               Scan
             </Text>
           </Pressable>
@@ -296,17 +277,8 @@ const HomeScreen = ({ navigation }) => {
             ]}
             onPress={() => navigation.navigate("NFTs")}
           >
-            <Ionicons
-              name="images-outline"
-              size={30}
-              color="#000"
-            />
-            <Text
-              style={[
-                staticStyles.actionPrimaryLabel,
-                { color: "#000" },
-              ]}
-            >
+            <Ionicons name="images-outline" size={30} color="#000" />
+            <Text style={[staticStyles.actionPrimaryLabel, { color: "#000" }]}>
               NFTs
             </Text>
           </Pressable>
@@ -321,10 +293,7 @@ const HomeScreen = ({ navigation }) => {
           >
             Tokens
           </Text>
-          <Pressable
-            onPress={() => navigation.navigate("Tokens")}
-            hitSlop={8}
-          >
+          <Pressable onPress={() => navigation.navigate("Tokens")} hitSlop={8}>
             <Ionicons
               name="arrow-forward"
               size={20}
@@ -335,112 +304,112 @@ const HomeScreen = ({ navigation }) => {
 
         {/* ── Assets ── */}
         <View>
-            {isLoading ? (
-              <>
-                {[...Array(3)].map((_, i) => (
-                  <AssetSkeletonRow key={i} />
-                ))}
-              </>
-            ) : nativeAssets.length === 0 && tokenAssets.length === 0 ? (
-              <Card style={staticStyles.emptyCard}>
-                <Ionicons
-                  name="briefcase-outline"
-                  size={40}
-                  color={COLORS.textTertiary}
+          {isLoading ? (
+            <>
+              {[...Array(3)].map((_, i) => (
+                <AssetSkeletonRow key={i} />
+              ))}
+            </>
+          ) : nativeAssets.length === 0 && tokenAssets.length === 0 ? (
+            <Card style={staticStyles.emptyCard}>
+              <Ionicons
+                name="briefcase-outline"
+                size={40}
+                color={COLORS.textTertiary}
+              />
+              <Text
+                style={[
+                  staticStyles.emptyText,
+                  { color: COLORS.textSecondary },
+                ]}
+              >
+                No assets found
+              </Text>
+              <Text
+                style={[
+                  staticStyles.emptySubtext,
+                  { color: COLORS.textTertiary },
+                ]}
+              >
+                Enable networks above to see your balances
+              </Text>
+            </Card>
+          ) : (
+            <>
+              {/* Native chain assets */}
+              {nativeAssets.map((asset) => (
+                <AssetCard
+                  key={`native-${asset.chainId}`}
+                  asset={asset}
+                  onPress={() =>
+                    navigation.navigate("TokenDetail", {
+                      chain: asset.chain,
+                      balance: asset.balance,
+                      usdValue: asset.usdValue,
+                      price: asset.price,
+                      priceChange24h: asset.priceChange24h,
+                      walletAddress: wallet?.address,
+                    })
+                  }
                 />
-                <Text
-                  style={[
-                    staticStyles.emptyText,
-                    { color: COLORS.textSecondary },
-                  ]}
-                >
-                  No assets found
-                </Text>
-                <Text
-                  style={[
-                    staticStyles.emptySubtext,
-                    { color: COLORS.textTertiary },
-                  ]}
-                >
-                  Enable networks above to see your balances
-                </Text>
-              </Card>
-            ) : (
-              <>
-                {/* Native chain assets */}
-                {nativeAssets.map((asset) => (
-                  <AssetCard
-                    key={`native-${asset.chainId}`}
-                    asset={asset}
-                    onPress={() =>
-                      navigation.navigate("TokenDetail", {
-                        chain: asset.chain,
-                        balance: asset.balance,
-                        usdValue: asset.usdValue,
-                        price: asset.price,
-                        priceChange24h: asset.priceChange24h,
-                        walletAddress: wallet?.address,
-                      })
-                    }
-                  />
-                ))}
+              ))}
 
-                {/* ERC-20 tokens grouped by chain */}
-                {Object.entries(tokensByChain).map(([chainId, tokens]) => {
-                  const chain = getChain(parseInt(chainId));
-                  return (
-                    <View key={chainId}>
-                      <View style={staticStyles.tokenSectionRow}>
-                        {chain?.icon && (
-                          <Image
-                            source={{ uri: chain.icon }}
-                            style={staticStyles.tokenSectionIcon}
-                          />
-                        )}
-                        <Text
-                          style={[
-                            staticStyles.tokenSectionLabel,
-                            { color: COLORS.textSecondary },
-                          ]}
-                        >
-                          Tokens · {chain?.name ?? `Chain ${chainId}`}
-                        </Text>
-                      </View>
-                      {tokens.map((token) => (
-                        <TokenAssetCard
-                          key={token._id}
-                          asset={token}
-                          onPress={() =>
-                            navigation.navigate("TokenDetail", {
-                              token: {
-                                address: token.address,
-                                symbol: token.symbol,
-                                name: token.name,
-                                decimals: token.decimals,
-                                logoURI: token.logo,
-                              },
-                              chain,
-                              balance: token.balance,
-                              usdValue: token.usdValue,
-                              price: token.price,
-                              priceChange24h: token.priceChange24h,
-                              walletAddress: wallet?.address,
-                              chainId: token.chainId,
-                            })
-                          }
-                          onSend={() =>
-                            navigation.navigate("Send", {
-                              token: { ...token, balance: token.balance },
-                              chain,
-                            })
-                          }
+              {/* ERC-20 tokens grouped by chain */}
+              {Object.entries(tokensByChain).map(([chainId, tokens]) => {
+                const chain = getChain(parseInt(chainId));
+                return (
+                  <View key={chainId}>
+                    <View style={staticStyles.tokenSectionRow}>
+                      {chain?.icon && (
+                        <Image
+                          source={{ uri: chain.icon }}
+                          style={staticStyles.tokenSectionIcon}
                         />
-                      ))}
+                      )}
+                      <Text
+                        style={[
+                          staticStyles.tokenSectionLabel,
+                          { color: COLORS.textSecondary },
+                        ]}
+                      >
+                        Tokens · {chain?.name ?? `Chain ${chainId}`}
+                      </Text>
                     </View>
-                  );
-                })}
-              </>
-            )}
+                    {tokens.map((token) => (
+                      <TokenAssetCard
+                        key={token._id}
+                        asset={token}
+                        onPress={() =>
+                          navigation.navigate("TokenDetail", {
+                            token: {
+                              address: token.address,
+                              symbol: token.symbol,
+                              name: token.name,
+                              decimals: token.decimals,
+                              logoURI: token.logo,
+                            },
+                            chain,
+                            balance: token.balance,
+                            usdValue: token.usdValue,
+                            price: token.price,
+                            priceChange24h: token.priceChange24h,
+                            walletAddress: wallet?.address,
+                            chainId: token.chainId,
+                          })
+                        }
+                        onSend={() =>
+                          navigation.navigate("Send", {
+                            token: { ...token, balance: token.balance },
+                            chain,
+                          })
+                        }
+                      />
+                    ))}
+                  </View>
+                );
+              })}
+            </>
+          )}
         </View>
       </ScrollView>
 
@@ -452,7 +421,9 @@ const HomeScreen = ({ navigation }) => {
       <QRScanner
         visible={showScanner}
         onClose={() => setShowScanner(false)}
-        onScan={(address) => navigation.navigate("Send", { recipient: address })}
+        onScan={(address) =>
+          navigation.navigate("Send", { recipient: address })
+        }
       />
     </View>
   );
@@ -461,7 +432,11 @@ const HomeScreen = ({ navigation }) => {
 // ─── Static styles (created once, no theme dep) ───────────────────────────────
 const staticStyles = StyleSheet.create({
   container: { flex: 1 },
-  scrollContent: { padding: SPACING.md, paddingBottom: 100 },
+  scrollContent: {
+    paddingHorizontal: SPACING.sm,
+    paddingTop: SPACING.md,
+    paddingBottom: 100,
+  },
 
   header: {
     flexDirection: "row",
@@ -488,7 +463,7 @@ const staticStyles = StyleSheet.create({
     justifyContent: "space-between",
     marginBottom: SPACING.lg,
   },
-  actionPrimaryLabel: { fontSize: FONTS.sizes.sm, fontWeight: "700" },
+  actionPrimaryLabel: { fontSize: FONTS.sizes.md, fontWeight: "900" },
   actionPressed: { opacity: 0.85, transform: [{ scale: 0.98 }] },
   // Turns the up/down icon into a diagonal arrow (↗ send, ↙ receive)
   slantIcon: { transform: [{ rotate: "45deg" }] },

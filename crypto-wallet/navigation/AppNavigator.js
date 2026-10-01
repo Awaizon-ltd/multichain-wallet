@@ -7,6 +7,7 @@ import { useTheme } from "../contexts/ThemeContext";
 
 // Wallet Screens
 import HomeScreen from "../screens/wallet/HomeScreen";
+import MarketScreen from "../screens/market/MarketScreen";
 import SendScreen from "../screens/wallet/SendScreen";
 import ReceiveScreen from "../screens/wallet/ReceiveScreen";
 import TransactionsScreen from "../screens/wallet/TransactionsScreen";
@@ -18,10 +19,15 @@ import NFTScreen from "../screens/wallet/NFTScreen";
 import TokenDetailScreen from "../screens/wallet/TokenDetailScreen";
 import NFTDetailScreen from "../screens/wallet/NFTDetailScreen";
 import NFTSendScreen from "../screens/wallet/NFTSendScreen";
+import NFTImportScreen from "../screens/wallet/NFTImportScreen";
 import RecoveryPhraseScreen from "../screens/wallet/RecoveryPhraseScreen";
 
 // Settings
 import SettingsScreen from "../screens/settings/SettingsScreen";
+import WalletSettingsScreen from "../screens/settings/WalletSettingsScreen";
+import SecuritySettingsScreen from "../screens/settings/SecuritySettingsScreen";
+import PreferencesSettingsScreen from "../screens/settings/PreferencesSettingsScreen";
+import AboutSettingsScreen from "../screens/settings/AboutSettingsScreen";
 import SetupBiometricScreen from "../screens/auth/SetupBiometricScreen";
 import ChangePasscodeScreen from "../screens/auth/ChangePasscodeScreen";
 import AccountManager from "../screens/wallet/AccountManager";
@@ -38,11 +44,12 @@ const { width } = Dimensions.get("window");
 // The isolated Explore circle sits outside the pill, so the pill itself
 // now only has to fit the other 4 tabs.
 const EXPLORE_ROUTE = "BrowserTab";
-const PILL_WIDTH = width * 0.7;
+const PILL_WIDTH = width * 0.8;
 const CIRCLE_SIZE = 56;
 
 const iconMap = {
   WalletTab: { focused: "wallet", blur: "wallet-outline" },
+  MarketTab: { focused: "stats-chart", blur: "stats-chart-outline" },
   BrowserTab: { focused: "compass", blur: "compass-outline" },
   ActivityTab: { focused: "time", blur: "time-outline" },
   SwapTab: { focused: "repeat", blur: "repeat-outline" },
@@ -50,6 +57,7 @@ const iconMap = {
 
 const labelMap = {
   WalletTab: "Wallet",
+  MarketTab: "Market",
   BrowserTab: "Explore",
   ActivityTab: "Activity",
   SwapTab: "Swap",
@@ -109,7 +117,7 @@ const FloatingTabBar = ({ state, descriptors, navigation }) => {
               >
                 <Ionicons
                   name={iconName}
-                  size={20}
+                  size={26}
                   color={isFocused ? COLORS.background : COLORS.textTertiary}
                 />
               </Pressable>
@@ -133,7 +141,7 @@ const FloatingTabBar = ({ state, descriptors, navigation }) => {
           >
             <Ionicons
               name={iconMap[EXPLORE_ROUTE][exploreFocused ? "focused" : "blur"]}
-              size={22}
+              size={30}
               color={exploreFocused ? COLORS.background : COLORS.textTertiary}
             />
           </Pressable>
@@ -171,9 +179,9 @@ const styles = StyleSheet.create({
     elevation: 16,
   },
   tabItem: {
-    width: 44,
-    height: 44,
-    borderRadius: 22,
+    width: 40,
+    height: 40,
+    borderRadius: 20,
     alignItems: "center",
     justifyContent: "center",
   },
@@ -199,6 +207,7 @@ const MainTabs = () => (
     screenOptions={{ headerShown: false }}
   >
     <Tab.Screen name="WalletTab" component={HomeScreen} />
+    <Tab.Screen name="MarketTab" component={MarketScreen} />
     <Tab.Screen name="SwapTab" component={SwapBridgeScreen} />
     <Tab.Screen name="ActivityTab" component={TransactionsScreen} />
     <Tab.Screen name="BrowserTab" component={BrowserScreen} />
@@ -292,6 +301,11 @@ const AppNavigator = () => {
         component={NFTSendScreen}
         options={{ title: "Send NFT" }}
       />
+      <Stack.Screen
+        name="NFTImport"
+        component={NFTImportScreen}
+        options={{ title: "Import NFT", headerBackTitle: "Back" }}
+      />
       {/* Browser */}
       <Stack.Screen
         name="Browser"
@@ -328,6 +342,26 @@ const AppNavigator = () => {
         name="Settings"
         component={SettingsScreen}
         options={{ title: "Settings", headerBackTitle: "Back" }}
+      />
+      <Stack.Screen
+        name="WalletSettings"
+        component={WalletSettingsScreen}
+        options={{ title: "Wallet", headerBackTitle: "Back" }}
+      />
+      <Stack.Screen
+        name="SecuritySettings"
+        component={SecuritySettingsScreen}
+        options={{ title: "Security", headerBackTitle: "Back" }}
+      />
+      <Stack.Screen
+        name="PreferencesSettings"
+        component={PreferencesSettingsScreen}
+        options={{ title: "Preferences", headerBackTitle: "Back" }}
+      />
+      <Stack.Screen
+        name="AboutSettings"
+        component={AboutSettingsScreen}
+        options={{ title: "About", headerBackTitle: "Back" }}
       />
       <Stack.Screen
         name="AccentColor"

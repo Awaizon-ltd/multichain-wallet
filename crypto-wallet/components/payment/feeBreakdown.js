@@ -36,7 +36,7 @@ const FeeBreakdown = ({
   gasError, // string | null
   expanded, // bool — controlled by parent
   onToggle, // () => void
-  chainSymbol, // e.g. "ETH", "MATIC"
+  chainSymbol, // e.g. "ETH", "POL"
   // [INTENT] Future: feeOverride — merchant-specified flat fee
   // [INTENT] Future: feeLabel    — e.g. "Processing fee" from merchant intent
 }) => {
