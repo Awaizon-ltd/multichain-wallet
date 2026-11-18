@@ -94,7 +94,8 @@ async function recordSwap(data) {
   return { swap: rows[0], duplicate: false };
 }
 
-// ─── Read: single wallet ────────────────────────────────────────────────────
+// ─── Read: single wallet ───────────────────────────────
+// // ─── Read: single wallet // ─── Read: single wallet ─────────────────────
 
 /**
  * Fetch swap history for one wallet, newest first.
