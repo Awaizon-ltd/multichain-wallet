@@ -1,5 +1,22 @@
-// screens/settings/BindWalletScreen.js
-import React, { useState, useEffect, useRef } from "react";
+// screens/settings/BindingWalletScreen.js
+// ─────────────────────────────────────────────────────────────────────────────
+// Wallet identity — give this account a @username people can send to.
+//
+// No email, no password: the user proves they own the account by signing a
+// one-time message with BOTH its EVM key and its Solana key
+// (services/identity.js), and the backend verifies both before linking
+// @username → { EVM address, Solana address }. Signatures are never saved —
+// they live only for the duration of the request.
+//
+// Identities are per account: this screen always shows the ACTIVE account.
+// Switch accounts and it shows that account's own link (or offers to create
+// one) — each account is a separate identity with its own username.
+//
+//   linked   → identity card (+ change username, which re-proves ownership)
+//   username → pick @name, checked live
+//   prove    → see the exact message, unlock with PIN, sign with both keys
+// ─────────────────────────────────────────────────────────────────────────────
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   View,
   Text,
@@ -9,1488 +26,631 @@ import {
   TouchableOpacity,
   ActivityIndicator,
   KeyboardAvoidingView,
-  Image,
   Platform,
   Animated,
-  StatusBar,
 } from "react-native";
-import {
-  Feather,
-  Ionicons,
-  MaterialCommunityIcons,
-  FontAwesome5,
-} from "@expo/vector-icons";
+import { Ionicons } from "@expo/vector-icons";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
+import * as Clipboard from "expo-clipboard";
+import * as Haptics from "expo-haptics";
 import { useWallet } from "../../contexts/WalletContext";
 import { useTheme } from "../../contexts/ThemeContext";
-import { API_CONFIG } from "../../config/api";
-import { getMainnetChains } from "../../constants/Chain";
-import Alert from "../../utils/Alert";
-import { SPACING, FONTS, BORDER_RADIUS, SHADOWS } from "../../constants/Theme";
-import AsyncStorage from "@react-native-async-storage/async-storage";
-import BindWalletIntro from "../../components/bindwallet/BindWalletIntro";
+import PasscodeModal from "../../components/account/PasscodeModal";
+import {
+  getIdentityByAddress,
+  checkUsername,
+  requestChallenge,
+  proveAndLink,
+} from "../../services/identity";
+import { rememberIdentity } from "../../hooks/useIdentity";
 
-const INTRO_SEEN_KEY = "@bind_wallet_intro_seen";
+const USERNAME_RE = /^[a-z0-9_]{3,20}$/;
+const short = (a, n = 6) => (a ? `${a.slice(0, n)}…${a.slice(-4)}` : "—");
 
-const MAINNET_CHAINS = getMainnetChains();
-const API_BASE_URL = API_CONFIG.BASE_URL;
-
-// ─────────────────────────────────────────────────────────────────────────────
-// API layer
-// ─────────────────────────────────────────────────────────────────────────────
-const api = {
-  async bind({ username, email, wallet_address }) {
-    const res = await fetch(`${API_BASE_URL}/wallets/bind`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ username, email, wallet_address }),
-    });
-    const json = await res.json();
-    if (!res.ok) throw { status: res.status, ...json };
-    return json;
-  },
-
-  async resolveByAddress(wallet_address) {
-    const res = await fetch(
-      `${API_BASE_URL}/wallets/resolve-by-address?wallet_address=${encodeURIComponent(wallet_address.trim())}`,
-    );
-    const json = await res.json();
-    if (!res.ok) throw { status: res.status, ...json };
-    return json;
-  },
-
-  async resolveByIdentity(emailOrUsername) {
-    const res = await fetch(
-      `${API_BASE_URL}/wallets/resolve?email_or_username=${encodeURIComponent(emailOrUsername.trim())}`,
-    );
-    const json = await res.json();
-    if (!res.ok) throw { status: res.status, ...json };
-    return json;
-  },
+const STEP_LABEL = {
+  evm: "Signing with your EVM key…",
+  solana: "Signing with your Solana key…",
+  verify: "Verifying ownership…",
 };
 
-const ERROR_MESSAGES = {
-  EMAIL_ALREADY_BOUND: "This email is already linked to another wallet.",
-  WALLET_ALREADY_BOUND: "This wallet is already bound to another account.",
-  USERNAME_TAKEN: "That username is taken — try a different one.",
-  INVALID_WALLET_FORMAT: "Your wallet address must be a valid EVM address.",
+const FRIENDLY_ERROR = {
+  USERNAME_TAKEN: "That username was just taken. Pick another.",
+  CHALLENGE_EXPIRED: "The verification expired. Tap Sign to try again.",
+  ADDRESS_ALREADY_BOUND: "This account is already linked to a different identity.",
+  BAD_EVM_SIGNATURE: "Signature check failed. Make sure the right account is active.",
+  BAD_SOLANA_SIGNATURE: "Signature check failed. Make sure the right account is active.",
 };
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Skeleton shimmer — single reusable bone
-// ─────────────────────────────────────────────────────────────────────────────
-const SkeletonBone = ({ width, height, borderRadius, style, COLORS }) => {
-  const shimmer = useRef(new Animated.Value(0)).current;
+export default function BindingWalletScreen({ navigation }) {
+  const theme = useTheme();
+  const { COLORS } = theme;
+  const insets = useSafeAreaInsets();
+  const styles = useMemo(() => makeStyles(theme), [theme]);
+  const {
+    address,
+    solanaAddress,
+    accounts,
+    activeAccountIndex,
+    createSignerForTransaction,
+    createSolanaSignerForTransaction,
+  } = useWallet();
+  const accountName = accounts?.[activeAccountIndex]?.name ?? "This account";
 
-  useEffect(() => {
-    Animated.loop(
-      Animated.sequence([
-        Animated.timing(shimmer, {
-          toValue: 1,
-          duration: 900,
-          useNativeDriver: true,
-        }),
-        Animated.timing(shimmer, {
-          toValue: 0,
-          duration: 900,
-          useNativeDriver: true,
-        }),
-      ]),
-    ).start();
-  }, []);
+  const [identity, setIdentity] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState(null);
+  const [mode, setMode] = useState("linked"); // linked | username | prove
 
-  const opacity = shimmer.interpolate({
-    inputRange: [0, 1],
-    outputRange: [0.35, 0.7],
-  });
-
-  return (
-    <Animated.View
-      style={[
-        {
-          width,
-          height,
-          borderRadius: borderRadius ?? BORDER_RADIUS.md,
-          backgroundColor: COLORS.border,
-          opacity,
-        },
-        style,
-      ]}
-    />
-  );
-};
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Skeleton screen — shown while resolveByAddress is in-flight
-// ─────────────────────────────────────────────────────────────────────────────
-const SkeletonScreen = ({ COLORS }) => {
-  const cardBg = { backgroundColor: COLORS.card, ...SHADOWS.small };
-
-  return (
-    <ScrollView
-      contentContainerStyle={{ padding: SPACING.lg, paddingBottom: 100 }}
-      showsVerticalScrollIndicator={false}
-      scrollEnabled={false}
-    >
-      {/* Status banner skeleton */}
-      <View
-        style={[
-          ss.card,
-          cardBg,
-          {
-            flexDirection: "row",
-            alignItems: "center",
-            gap: SPACING.md,
-            padding: SPACING.md,
-            marginBottom: SPACING.md,
-          },
-        ]}
-      >
-        <SkeletonBone
-          width={60}
-          height={60}
-          borderRadius={30}
-          COLORS={COLORS}
-        />
-        <View style={{ flex: 1, gap: 8 }}>
-          <SkeletonBone width="55%" height={14} COLORS={COLORS} />
-          <SkeletonBone width="80%" height={11} COLORS={COLORS} />
-          <SkeletonBone width="65%" height={11} COLORS={COLORS} />
-        </View>
-      </View>
-
-      {/* Chain coverage skeleton */}
-      <View style={[ss.card, cardBg]}>
-        <View
-          style={{
-            flexDirection: "row",
-            alignItems: "center",
-            marginBottom: SPACING.md,
-          }}
-        >
-          <SkeletonBone width="40%" height={11} COLORS={COLORS} />
-          <SkeletonBone
-            width={52}
-            height={22}
-            borderRadius={11}
-            COLORS={COLORS}
-            style={{ marginLeft: "auto" }}
-          />
-        </View>
-        <View
-          style={{ flexDirection: "row", flexWrap: "wrap", gap: 6, margin: -3 }}
-        >
-          {Array.from({ length: 8 }).map((_, i) => (
-            <SkeletonBone
-              key={i}
-              width={72 + (i % 3) * 12}
-              height={28}
-              borderRadius={14}
-              COLORS={COLORS}
-              style={{ margin: 3 }}
-            />
-          ))}
-        </View>
-        <View
-          style={{
-            flexDirection: "row",
-            alignItems: "center",
-            justifyContent: "center",
-            gap: 6,
-            marginTop: SPACING.md,
-            paddingTop: SPACING.sm,
-            borderTopWidth: StyleSheet.hairlineWidth,
-            borderTopColor: COLORS.divider,
-          }}
-        >
-          <SkeletonBone width={6} height={6} borderRadius={3} COLORS={COLORS} />
-          <SkeletonBone width="60%" height={10} COLORS={COLORS} />
-        </View>
-      </View>
-
-      {/* Active wallet skeleton */}
-      <View style={[ss.card, cardBg]}>
-        <SkeletonBone
-          width="30%"
-          height={10}
-          COLORS={COLORS}
-          style={{ marginBottom: SPACING.md }}
-        />
-        <View
-          style={[
-            ss.addressRow,
-            { backgroundColor: COLORS.cardElevated, alignItems: "center" },
-          ]}
-        >
-          <SkeletonBone
-            width={36}
-            height={36}
-            borderRadius={18}
-            COLORS={COLORS}
-          />
-          <SkeletonBone
-            width="60%"
-            height={13}
-            COLORS={COLORS}
-            style={{ flex: 1, marginLeft: SPACING.sm }}
-          />
-          <SkeletonBone width={32} height={14} COLORS={COLORS} />
-        </View>
-      </View>
-
-      {/* Bind form skeleton */}
-      <View style={[ss.card, cardBg]}>
-        <SkeletonBone
-          width="35%"
-          height={10}
-          COLORS={COLORS}
-          style={{ marginBottom: SPACING.md }}
-        />
-        <SkeletonBone
-          width="25%"
-          height={10}
-          COLORS={COLORS}
-          style={{ marginBottom: 6 }}
-        />
-        <SkeletonBone
-          width="100%"
-          height={48}
-          borderRadius={BORDER_RADIUS.lg}
-          COLORS={COLORS}
-          style={{ marginBottom: SPACING.md }}
-        />
-        <SkeletonBone
-          width="30%"
-          height={10}
-          COLORS={COLORS}
-          style={{ marginBottom: 6 }}
-        />
-        <SkeletonBone
-          width="100%"
-          height={48}
-          borderRadius={BORDER_RADIUS.lg}
-          COLORS={COLORS}
-          style={{ marginBottom: SPACING.md }}
-        />
-        <SkeletonBone
-          width="100%"
-          height={52}
-          borderRadius={BORDER_RADIUS.lg}
-          COLORS={COLORS}
-          style={{ marginTop: SPACING.sm }}
-        />
-      </View>
-
-      {/* Lookup skeleton */}
-      <View style={[ss.card, cardBg]}>
-        <SkeletonBone
-          width="38%"
-          height={10}
-          COLORS={COLORS}
-          style={{ marginBottom: SPACING.md }}
-        />
-        <SkeletonBone
-          width="40%"
-          height={10}
-          COLORS={COLORS}
-          style={{ marginBottom: 6 }}
-        />
-        <SkeletonBone
-          width="100%"
-          height={48}
-          borderRadius={BORDER_RADIUS.lg}
-          COLORS={COLORS}
-          style={{ marginBottom: SPACING.md }}
-        />
-        <SkeletonBone
-          width="100%"
-          height={50}
-          borderRadius={BORDER_RADIUS.lg}
-          COLORS={COLORS}
-        />
-      </View>
-    </ScrollView>
-  );
-};
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Animated card wrapper — slides up + fades in with configurable delay
-// ─────────────────────────────────────────────────────────────────────────────
-const AnimatedCard = ({ children, delay = 0, style }) => {
-  const anim = useRef(new Animated.Value(0)).current;
-
-  useEffect(() => {
-    Animated.timing(anim, {
-      toValue: 1,
-      duration: 380,
-      delay,
-      useNativeDriver: true,
-    }).start();
-  }, []);
-
-  return (
-    <Animated.View
-      style={[
-        {
-          opacity: anim,
-          transform: [
-            {
-              translateY: anim.interpolate({
-                inputRange: [0, 1],
-                outputRange: [18, 0],
-              }),
-            },
-          ],
-        },
-        style,
-      ]}
-    >
-      {children}
-    </Animated.View>
-  );
-};
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Animated focus input with theme-driven border
-// ─────────────────────────────────────────────────────────────────────────────
-const ThemedInput = ({
-  label,
-  value,
-  onChangeText,
-  placeholder,
-  keyboardType,
-  iconName,
-  iconLib = "Feather",
-  COLORS,
-}) => {
-  const focusAnim = useRef(new Animated.Value(0)).current;
-
-  const borderColor = focusAnim.interpolate({
-    inputRange: [0, 1],
-    outputRange: [COLORS.border, COLORS.primary],
-  });
-  const bgColor = focusAnim.interpolate({
-    inputRange: [0, 1],
-    outputRange: [COLORS.cardElevated, COLORS.hover],
-  });
-
-  const IconComponent =
-    iconLib === "Feather"
-      ? Feather
-      : iconLib === "Ionicons"
-        ? Ionicons
-        : MaterialCommunityIcons;
-
-  return (
-    <View style={{ marginBottom: SPACING.md }}>
-      <Text style={[ss.inputLabel, { color: COLORS.textTertiary }]}>
-        {label}
-      </Text>
-      <Animated.View
-        style={[ss.inputWrap, { borderColor, backgroundColor: bgColor }]}
-      >
-        {iconName ? (
-          <IconComponent
-            name={iconName}
-            size={17}
-            color={COLORS.textTertiary}
-            style={{ marginRight: SPACING.sm }}
-          />
-        ) : null}
-        <TextInput
-          style={[ss.inputText, { color: COLORS.text }]}
-          placeholder={placeholder}
-          placeholderTextColor={COLORS.textTertiary}
-          value={value}
-          onChangeText={onChangeText}
-          onFocus={() =>
-            Animated.timing(focusAnim, {
-              toValue: 1,
-              duration: 200,
-              useNativeDriver: false,
-            }).start()
-          }
-          onBlur={() =>
-            Animated.timing(focusAnim, {
-              toValue: 0,
-              duration: 200,
-              useNativeDriver: false,
-            }).start()
-          }
-          keyboardType={keyboardType || "default"}
-          autoCapitalize="none"
-          autoCorrect={false}
-        />
-      </Animated.View>
-    </View>
-  );
-};
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Chain pill using real icons from Chain.js
-// ─────────────────────────────────────────────────────────────────────────────
-const ChainPill = ({ chain, COLORS }) => (
-  <View
-    style={[
-      ss.chainPill,
-      { backgroundColor: COLORS.cardElevated, borderColor: COLORS.border },
-    ]}
-  >
-    <Image
-      source={{ uri: chain.icon }}
-      style={ss.chainIcon}
-      resizeMode="contain"
-    />
-    <Text style={[ss.chainLabel, { color: COLORS.textSecondary }]}>
-      {chain.name}
-    </Text>
-  </View>
-);
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Divider
-// ─────────────────────────────────────────────────────────────────────────────
-const Divider = ({ COLORS }) => (
-  <View
-    style={{
-      height: StyleSheet.hairlineWidth,
-      backgroundColor: COLORS.divider,
-      marginVertical: SPACING.sm,
-    }}
-  />
-);
-
-// ─────────────────────────────────────────────────────────────────────────────
-// InfoRow used in bound-data card
-// ─────────────────────────────────────────────────────────────────────────────
-const InfoRow = ({ label, value, COLORS, last }) => (
-  <>
-    <View style={ss.infoRow}>
-      <Text style={[ss.infoKey, { color: COLORS.textTertiary }]}>{label}</Text>
-      <Text
-        style={[ss.infoVal, { color: COLORS.text }]}
-        numberOfLines={1}
-        ellipsizeMode="middle"
-      >
-        {value}
-      </Text>
-    </View>
-    {!last && <Divider COLORS={COLORS} />}
-  </>
-);
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Primary CTA button
-// ─────────────────────────────────────────────────────────────────────────────
-const PrimaryButton = ({ label, onPress, loading, disabled, COLORS }) => {
-  const scaleAnim = useRef(new Animated.Value(1)).current;
-
-  const handlePressIn = () =>
-    Animated.spring(scaleAnim, {
-      toValue: 0.97,
-      useNativeDriver: true,
-      speed: 30,
-    }).start();
-  const handlePressOut = () =>
-    Animated.spring(scaleAnim, {
-      toValue: 1,
-      useNativeDriver: true,
-      speed: 30,
-    }).start();
-
-  return (
-    <Animated.View style={{ transform: [{ scale: scaleAnim }] }}>
-      <TouchableOpacity
-        onPress={onPress}
-        onPressIn={handlePressIn}
-        onPressOut={handlePressOut}
-        disabled={disabled || loading}
-        activeOpacity={1}
-        style={[
-          ss.primaryBtn,
-          {
-            backgroundColor: disabled ? COLORS.disabled : COLORS.primary,
-            ...SHADOWS.medium,
-            shadowColor: disabled ? "#000" : COLORS.primary,
-          },
-        ]}
-      >
-        {loading ? (
-          <ActivityIndicator size="small" color={COLORS.background} />
-        ) : (
-          <Text
-            style={[
-              ss.primaryBtnLabel,
-              { color: disabled ? COLORS.disabledText : COLORS.background },
-            ]}
-          >
-            {label}
-          </Text>
-        )}
-      </TouchableOpacity>
-    </Animated.View>
-  );
-};
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Outline button (lookup)
-// ─────────────────────────────────────────────────────────────────────────────
-const OutlineButton = ({ label, onPress, loading, disabled, COLORS }) => (
-  <TouchableOpacity
-    onPress={onPress}
-    disabled={disabled || loading}
-    activeOpacity={0.75}
-    style={[
-      ss.outlineBtn,
-      { borderColor: disabled ? COLORS.border : COLORS.primary },
-    ]}
-  >
-    {loading ? (
-      <ActivityIndicator size="small" color={COLORS.primary} />
-    ) : (
-      <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
-        <Feather
-          name="search"
-          size={16}
-          color={disabled ? COLORS.textTertiary : COLORS.primary}
-        />
-        <Text
-          style={[
-            ss.outlineBtnLabel,
-            { color: disabled ? COLORS.textTertiary : COLORS.primary },
-          ]}
-        >
-          {label}
-        </Text>
-      </View>
-    )}
-  </TouchableOpacity>
-);
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Static stylesheet (values that don't depend on COLORS)
-// ─────────────────────────────────────────────────────────────────────────────
-const ss = StyleSheet.create({
-  // Header
-  header: {
-    flexDirection: "row",
-    alignItems: "center",
-    paddingHorizontal: SPACING.lg,
-    paddingBottom: SPACING.md,
-  },
-  backTouch: {
-    marginRight: SPACING.sm,
-    padding: SPACING.xs,
-    borderRadius: BORDER_RADIUS.round,
-  },
-  backIcon: { fontSize: 28, fontWeight: "300", lineHeight: 34 },
-  headerTitle: {
-    fontSize: FONTS.sizes.lg,
-    fontWeight: "700",
-    lineHeight: FONTS.sizes.lg * FONTS.lineHeights.tight,
-  },
-  headerSub: { fontSize: FONTS.sizes.xs, marginTop: 2 },
-  statusDot: { width: 8, height: 8, borderRadius: BORDER_RADIUS.round },
-
-  // Cards
-  card: {
-    borderRadius: BORDER_RADIUS.xl,
-    padding: SPACING.lg,
-    marginBottom: SPACING.md,
-  },
-
-  // Section label
-  sectionLabel: {
-    fontSize: FONTS.sizes.xs,
-    fontWeight: "700",
-    letterSpacing: 1,
-    textTransform: "uppercase",
-    marginBottom: SPACING.md,
-  },
-
-  // Inputs
-  inputLabel: {
-    fontSize: FONTS.sizes.xs,
-    fontWeight: "600",
-    letterSpacing: 0.6,
-    textTransform: "uppercase",
-    marginBottom: 6,
-  },
-  inputWrap: {
-    flexDirection: "row",
-    alignItems: "center",
-    borderRadius: BORDER_RADIUS.lg,
-    borderWidth: 1.5,
-    paddingHorizontal: SPACING.md,
-  },
-  inputIcon: { fontSize: 16, marginRight: SPACING.sm },
-  inputText: {
-    flex: 1,
-    fontSize: FONTS.sizes.md,
-    paddingVertical: SPACING.sm + 2,
-    fontWeight: "400",
-  },
-
-  // Chain pills
-  chainPill: {
-    flexDirection: "row",
-    alignItems: "center",
-    borderRadius: BORDER_RADIUS.round,
-    paddingVertical: 5,
-    paddingHorizontal: 10,
-    margin: 3,
-    borderWidth: 1,
-  },
-  chainIcon: {
-    width: 15,
-    height: 15,
-    borderRadius: BORDER_RADIUS.round,
-    marginRight: 5,
-  },
-  chainLabel: { fontSize: 11, fontWeight: "500" },
-
-  // Info rows
-  infoRow: {
-    flexDirection: "row",
-    justifyContent: "space-between",
-    alignItems: "center",
-    paddingVertical: 10,
-  },
-  infoKey: { fontSize: FONTS.sizes.sm, fontWeight: "500" },
-  infoVal: {
-    fontSize: FONTS.sizes.sm,
-    fontWeight: "600",
-    maxWidth: "58%",
-    textAlign: "right",
-  },
-
-  // Buttons
-  primaryBtn: {
-    borderRadius: BORDER_RADIUS.lg,
-    paddingVertical: 16,
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  primaryBtnLabel: {
-    fontSize: FONTS.sizes.md,
-    fontWeight: "700",
-    letterSpacing: 0.3,
-  },
-  outlineBtn: {
-    borderRadius: BORDER_RADIUS.lg,
-    paddingVertical: 15,
-    alignItems: "center",
-    justifyContent: "center",
-    borderWidth: 1.5,
-  },
-  outlineBtnLabel: { fontSize: FONTS.sizes.md, fontWeight: "600" },
-
-  // Wallet address row
-  addressRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    borderRadius: BORDER_RADIUS.md,
-    padding: SPACING.md,
-    gap: SPACING.sm,
-  },
-  addressText: {
-    flex: 1,
-    fontSize: 13,
-    letterSpacing: 0.4,
-    fontFamily: Platform.OS === "ios" ? "Courier New" : "monospace",
-  },
-
-  // Lookup result / error
-  resultCard: {
-    borderRadius: BORDER_RADIUS.lg,
-    padding: SPACING.md,
-    marginTop: SPACING.sm,
-  },
-  resultLabel: {
-    fontSize: FONTS.sizes.xs,
-    fontWeight: "700",
-    letterSpacing: 1,
-    textTransform: "uppercase",
-    marginBottom: SPACING.sm,
-  },
-});
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Main screen
-// ─────────────────────────────────────────────────────────────────────────────
-const BindWalletScreen = ({ navigation }) => {
-  const { wallet } = useWallet();
-  const { COLORS, isDark } = useTheme();
-
-  const [introReady, setIntroReady] = useState(false); // true once AsyncStorage check done
-  const [showIntro, setShowIntro] = useState(false); // true only if not seen before
+  // Username step
   const [username, setUsername] = useState("");
-  const [email, setEmail] = useState("");
-  const [lookupQuery, setLookup] = useState("");
-  const [loading, setLoading] = useState(false);
+  const [check, setCheck] = useState(null); // { available, reason } | null
   const [checking, setChecking] = useState(false);
-  const [boundData, setBoundData] = useState(null);
-  const [lookupResult, setLookupRes] = useState(null);
-  const [lookupError, setLookupErr] = useState(null);
 
-  const mainFade = useRef(new Animated.Value(0)).current;
+  // Prove step
+  const [challenge, setChallenge] = useState(null);
+  const [preparing, setPreparing] = useState(false);
+  const [showPin, setShowPin] = useState(false);
+  const [signStep, setSignStep] = useState(null);
+  const [error, setError] = useState(null);
+  const [copied, setCopied] = useState(null);
 
-  const walletAddress = wallet?.address || "";
+  // Rests at 1; animates 0 → 1 only right after a successful link
+  const celebrate = useRef(new Animated.Value(1)).current;
 
-  // ── On mount: check if intro has been seen before ─────────────────────────
-  useEffect(() => {
-    AsyncStorage.getItem(INTRO_SEEN_KEY)
-      .then((val) => {
-        if (val === "true") {
-          // Already seen — skip intro, go straight to binding check
-          setIntroReady(true);
-          setShowIntro(false);
-          setChecking(true);
-
-          if (!walletAddress) {
-            setChecking(false);
-            return;
-          }
-
-          api
-            .resolveByAddress(walletAddress)
-            .then((json) => {
-              setBoundData(json.data);
-              setUsername(json.data.username || "");
-              setEmail(json.data.email || "");
-            })
-            .catch((err) => {
-              if (err.status !== 404) console.warn("Bind check:", err);
-            })
-            .finally(() => {
-              setChecking(false);
-              Animated.timing(mainFade, {
-                toValue: 1,
-                duration: 350,
-                useNativeDriver: true,
-              }).start();
-            });
-        } else {
-          // First time — show intro
-          setShowIntro(true);
-          setIntroReady(true);
-        }
-      })
-      .catch(() => {
-        // AsyncStorage failed — default to showing intro
-        setShowIntro(true);
-        setIntroReady(true);
-      });
-  }, []);
-
-  // ── Called when user taps "Set Up My Identity" on intro ──────────────────
-  const handleIntroContinue = () => {
-    // Persist so intro never shows again
-    AsyncStorage.setItem(INTRO_SEEN_KEY, "true").catch(() => {});
-
-    setShowIntro(false);
-    setChecking(true);
-
-    if (!walletAddress) {
-      setChecking(false);
-      return;
-    }
-
-    api
-      .resolveByAddress(walletAddress)
-      .then((json) => {
-        setBoundData(json.data);
-        setUsername(json.data.username || "");
-        setEmail(json.data.email || "");
-      })
-      .catch((err) => {
-        if (err.status !== 404) console.warn("Bind check:", err);
-      })
-      .finally(() => {
-        setChecking(false);
-        // Fade content in after skeleton disappears
-        Animated.timing(mainFade, {
-          toValue: 1,
-          duration: 350,
-          useNativeDriver: true,
-        }).start();
-      });
-  };
-
-  // ── Validation ──────────────────────────────────────────────────────────
-  const validate = () => {
-    if (!walletAddress) {
-      Alert.alert("No Wallet", "Please create or import a wallet first.");
-      return false;
-    }
-    if (username.trim().length < 3 || !/^[a-zA-Z0-9]+$/.test(username.trim())) {
-      Alert.alert("Invalid Username", "3+ alphanumeric characters only.");
-      return false;
-    }
-    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim())) {
-      Alert.alert("Invalid Email", "Please enter a valid email address.");
-      return false;
-    }
-    return true;
-  };
-
-  // ── Bind ────────────────────────────────────────────────────────────────
-  const handleBind = () => {
-    if (!validate()) return;
-    Alert.alert(
-      "Confirm Binding",
-      `You are about to permanently link:\n\n  @${username.trim()}\n  ${email.trim()}\n\n…to this wallet across all ${MAINNET_CHAINS.length} EVM chains. This cannot be undone.`,
-      [
-        { text: "Cancel", style: "cancel" },
-        {
-          text: "Confirm & Bind",
-          onPress: async () => {
-            setLoading(true);
-            try {
-              const result = await api.bind({
-                username: username.trim(),
-                email: email.trim(),
-                wallet_address: walletAddress,
-              });
-              setBoundData(result.data);
-              Alert.alert(
-                "✅ Identity Bound",
-                `@${result.data.username} is now linked to your wallet on all ${MAINNET_CHAINS.length} chains.`,
-                [{ text: "Done", onPress: () => navigation.goBack() }],
-              );
-            } catch (err) {
-              Alert.alert(
-                "Binding Failed",
-                ERROR_MESSAGES[err.code] ||
-                  err.errors?.join("\n") ||
-                  err.message ||
-                  "Something went wrong.",
-              );
-            } finally {
-              setLoading(false);
-            }
-          },
-        },
-      ],
-    );
-  };
-
-  // ── Lookup ──────────────────────────────────────────────────────────────
-  const handleLookup = async () => {
-    const q = lookupQuery.trim();
-    if (!q) return;
+  // ── Load this account's identity (re-runs on account switch) ────────────────
+  const load = useCallback(async () => {
+    if (!address) return;
     setLoading(true);
-    setLookupRes(null);
-    setLookupErr(null);
+    setLoadError(null);
     try {
-      const result = await api.resolveByIdentity(q);
-      setLookupRes(result.data);
+      const found = await getIdentityByAddress(address);
+      setIdentity(found);
+      rememberIdentity(address, found);
+      setMode(found ? "linked" : "username");
     } catch (err) {
-      setLookupErr(
-        err.status === 404
-          ? "No wallet found for that username or email."
-          : err.message || "Lookup failed. Please try again.",
-      );
+      setLoadError(err.message || "Couldn't reach the server.");
     } finally {
       setLoading(false);
     }
+  }, [address]);
+
+  useEffect(() => {
+    setUsername("");
+    setCheck(null);
+    setChallenge(null);
+    setError(null);
+    load();
+  }, [address, solanaAddress, load]);
+
+  // ── Live username check (debounced) ─────────────────────────────────────────
+  const normalized = username.trim().replace(/^@/, "").toLowerCase();
+  useEffect(() => {
+    setCheck(null);
+    if (!normalized) return;
+    if (!USERNAME_RE.test(normalized)) {
+      setCheck({ available: false, reason: "3–20 characters: letters, numbers and _" });
+      return;
+    }
+    if (identity && normalized === identity.username) {
+      setCheck({ available: false, reason: "That's already your username." });
+      return;
+    }
+    setChecking(true);
+    const t = setTimeout(() => {
+      checkUsername(normalized, address)
+        .then((r) => setCheck({ available: r.available, reason: r.reason }))
+        .catch(() => setCheck(null))
+        .finally(() => setChecking(false));
+    }, 400);
+    return () => {
+      clearTimeout(t);
+      setChecking(false);
+    };
+  }, [normalized, address, identity?.username]);
+
+  // ── Prove step ──────────────────────────────────────────────────────────────
+  const freshChallenge = useCallback(
+    () => requestChallenge({ username: normalized, evmAddress: address, solanaAddress }),
+    [normalized, address, solanaAddress],
+  );
+
+  const goProve = async () => {
+    setError(null);
+    setPreparing(true);
+    try {
+      setChallenge(await freshChallenge());
+      setMode("prove");
+    } catch (err) {
+      setError(FRIENDLY_ERROR[err.code] || err.message);
+    } finally {
+      setPreparing(false);
+    }
   };
 
-  // ── Wait for AsyncStorage check before rendering anything ────────────────
-  if (!introReady) return null;
+  // PIN → both signers → sign → link. Wrong PIN throws here, which the
+  // PasscodeModal shows; everything after that reports in-screen.
+  const handlePin = async (passcode) => {
+    const evmSigner = await createSignerForTransaction(passcode);
+    const solanaKeypair = await createSolanaSignerForTransaction(passcode);
+    setShowPin(false);
+    setError(null);
+    try {
+      // The preview may have sat open past its 5-minute expiry
+      let ch = challenge;
+      if (!ch || Date.parse(ch.expiresAt) - Date.now() < 15_000) {
+        ch = await freshChallenge();
+        setChallenge(ch);
+      }
+      const linked = await proveAndLink({
+        challenge: ch,
+        evmSigner,
+        solanaKeypair,
+        onStep: setSignStep,
+      });
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
+      setIdentity(linked);
+      rememberIdentity(address, linked); // Home / Accounts badges update now
+      setChallenge(null);
+      setUsername("");
+      setMode("linked");
+      celebrate.setValue(0);
+      Animated.spring(celebrate, { toValue: 1, friction: 6, useNativeDriver: true }).start();
+    } catch (err) {
+      setError(FRIENDLY_ERROR[err.code] || err.message || "Linking failed. Please try again.");
+      if (err.code === "USERNAME_TAKEN") setMode("username");
+      if (err.code === "CHALLENGE_EXPIRED") setChallenge(null);
+    } finally {
+      setSignStep(null);
+    }
+  };
 
-  // ── Render intro ─────────────────────────────────────────────────────────
-  if (showIntro) {
+  const copy = async (label, value) => {
+    await Clipboard.setStringAsync(value);
+    setCopied(label);
+    setTimeout(() => setCopied(null), 1500);
+  };
+
+  // ── Render ──────────────────────────────────────────────────────────────────
+  const AccountPill = (
+    <TouchableOpacity
+      style={styles.accountPill}
+      onPress={() => navigation.navigate("AccountManager")}
+      activeOpacity={0.8}
+    >
+      <View style={styles.accountDot} />
+      <Text style={styles.accountText} numberOfLines={1}>
+        {accountName} · {short(address)}
+      </Text>
+      <Text style={styles.accountSwitch}>Switch</Text>
+    </TouchableOpacity>
+  );
+
+  const renderLinked = () => {
+    const scale = celebrate.interpolate({ inputRange: [0, 1], outputRange: [0.9, 1] });
     return (
       <>
-        <StatusBar barStyle={isDark ? "light-content" : "dark-content"} />
-        <BindWalletIntro
-          onContinue={handleIntroContinue}
-          chainCount={MAINNET_CHAINS.length}
-          COLORS={COLORS}
-          isDark={isDark}
-        />
-      </>
-    );
-  }
-
-  const shortAddr = walletAddress
-    ? `${walletAddress.slice(0, 10)}  ···  ${walletAddress.slice(-8)}`
-    : null;
-
-  const isBound = !!boundData;
-
-  return (
-    <KeyboardAvoidingView
-      style={{ flex: 1, backgroundColor: COLORS.background }}
-      behavior={Platform.OS === "ios" ? "padding" : "height"}
-    >
-      <StatusBar barStyle={isDark ? "light-content" : "dark-content"} />
-
-      {/* ──────────────────────────────────────────────────
-          HEADER
-      ────────────────────────────────────────────────── */}
-      <View
-        style={{
-          paddingTop: Platform.OS === "ios" ? 58 : 22,
-          paddingBottom: SPACING.md,
-          backgroundColor: COLORS.background,
-          borderBottomWidth: StyleSheet.hairlineWidth,
-          borderBottomColor: COLORS.border,
-          ...SHADOWS.small,
-        }}
-      >
-        <View style={ss.header}>
-          {/* Back */}
-          <TouchableOpacity
-            onPress={() => navigation.goBack()}
-            style={[ss.backTouch, { backgroundColor: COLORS.cardElevated }]}
-            activeOpacity={0.7}
-            hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
-          >
-            <Ionicons name="chevron-back" size={22} color={COLORS.text} />
-          </TouchableOpacity>
-
-          {/* Title block */}
-          <View style={{ flex: 1, marginLeft: SPACING.sm }}>
-            <Text style={[ss.headerTitle, { color: COLORS.text }]}>
-              Wallet Identity
-            </Text>
-            <Text style={[ss.headerSub, { color: COLORS.textTertiary }]}>
-              {checking
-                ? "Checking status…"
-                : isBound
-                  ? `Bound  ·  @${boundData.username}`
-                  : `${MAINNET_CHAINS.length} EVM chains  ·  One binding`}
-            </Text>
+        <Animated.View style={[styles.idCard, { transform: [{ scale }] }]}>
+          <View style={styles.avatar}>
+            <Text style={styles.avatarText}>{identity.username[0].toUpperCase()}</Text>
+          </View>
+          <Text style={styles.handle}>@{identity.username}</Text>
+          <View style={styles.verified}>
+            <Ionicons name="shield-checkmark" size={13} color={COLORS.success} />
+            <Text style={styles.verifiedText}>Ownership verified by signature</Text>
           </View>
 
-          {/* Live status dot — hidden while skeleton showing */}
-          {!checking && (
-            <View
-              style={[
-                ss.statusDot,
-                {
-                  backgroundColor: isBound ? COLORS.success : COLORS.warning,
-                  shadowColor: isBound ? COLORS.success : COLORS.warning,
-                  shadowOpacity: 0.9,
-                  shadowRadius: 6,
-                  elevation: 4,
-                },
-              ]}
-            />
-          )}
+          <View style={styles.addrList}>
+            {[
+              ["EVM", identity.evm_address, "Ethereum, Base, Robinhood & other EVM networks"],
+              ["Solana", identity.solana_address, "Solana"],
+            ].map(([label, value, sub]) => (
+              <TouchableOpacity key={label} style={styles.addrRow} onPress={() => copy(label, value)} activeOpacity={0.7}>
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.addrLabel}>{label}</Text>
+                  <Text style={styles.addrValue}>{short(value, 8)}</Text>
+                  <Text style={styles.addrSub}>{sub}</Text>
+                </View>
+                <Ionicons
+                  name={copied === label ? "checkmark" : "copy-outline"}
+                  size={16}
+                  color={copied === label ? COLORS.success : COLORS.textTertiary}
+                />
+              </TouchableOpacity>
+            ))}
+          </View>
+        </Animated.View>
+
+        <View style={styles.note}>
+          <Ionicons name="paper-plane-outline" size={16} color={COLORS.primary} />
+          <Text style={styles.noteText}>
+            Anyone can now send to <Text style={styles.noteStrong}>@{identity.username}</Text> —
+            it resolves to the right address on EVM networks and Solana.
+          </Text>
         </View>
+        <View style={styles.note}>
+          <Ionicons name="people-outline" size={16} color={COLORS.primary} />
+          <Text style={styles.noteText}>
+            This username belongs to {accountName} only. Your other accounts link
+            separately, each with its own username.
+          </Text>
+        </View>
+
+        <TouchableOpacity
+          style={styles.secondaryBtn}
+          onPress={() => {
+            setUsername("");
+            setMode("username");
+          }}
+        >
+          <Text style={styles.secondaryText}>Change username</Text>
+        </TouchableOpacity>
+      </>
+    );
+  };
+
+  const renderUsername = () => {
+    const canContinue = check?.available && !checking && !preparing;
+    return (
+      <>
+        <Steps active={0} styles={styles} />
+        <Text style={styles.h1}>{identity ? "Pick a new username" : "Claim your username"}</Text>
+        <Text style={styles.lead}>
+          A simple name people can send to instead of a long address — for this
+          account's EVM and Solana wallets.
+        </Text>
+
+        <View
+          style={[
+            styles.inputWrap,
+            check && { borderColor: check.available ? COLORS.success : COLORS.error },
+          ]}
+        >
+          <Text style={styles.at}>@</Text>
+          <TextInput
+            value={username}
+            onChangeText={(v) => setUsername(v.replace(/\s/g, ""))}
+            placeholder="username"
+            placeholderTextColor={COLORS.textTertiary}
+            autoCapitalize="none"
+            autoCorrect={false}
+            maxLength={21}
+            style={styles.input}
+            returnKeyType="next"
+            onSubmitEditing={() => canContinue && goProve()}
+          />
+          {checking ? (
+            <ActivityIndicator size="small" color={COLORS.textTertiary} />
+          ) : check ? (
+            <Ionicons
+              name={check.available ? "checkmark-circle" : "close-circle"}
+              size={20}
+              color={check.available ? COLORS.success : COLORS.error}
+            />
+          ) : null}
+        </View>
+        <Text style={[styles.hint, check && !check.available && { color: COLORS.error }]}>
+          {check?.available
+            ? `@${normalized} is available`
+            : check?.reason ?? "3–20 characters · letters, numbers and _ · not case-sensitive"}
+        </Text>
+
+        {!!error && <Text style={styles.error}>{error}</Text>}
+
+        <TouchableOpacity
+          style={[styles.primaryBtn, !canContinue && styles.disabled]}
+          onPress={goProve}
+          disabled={!canContinue}
+        >
+          {preparing ? (
+            <ActivityIndicator color={COLORS.background} />
+          ) : (
+            <Text style={styles.primaryText}>Continue</Text>
+          )}
+        </TouchableOpacity>
+        {identity && (
+          <TouchableOpacity style={styles.linkBtn} onPress={() => setMode("linked")}>
+            <Text style={styles.linkText}>Keep @{identity.username}</Text>
+          </TouchableOpacity>
+        )}
+      </>
+    );
+  };
+
+  const renderProve = () => (
+    <>
+      <Steps active={1} styles={styles} />
+      <Text style={styles.h1}>Prove it's your wallet</Text>
+      <Text style={styles.lead}>
+        You'll sign the message below with this account's EVM key and its
+        Solana key. Rizon checks both signatures, then links them to{" "}
+        <Text style={styles.noteStrong}>@{normalized}</Text>.
+      </Text>
+
+      <View style={styles.facts}>
+        {[
+          ["cash-outline", "Free — no transaction, no gas"],
+          ["eye-off-outline", "The signature is checked once and never saved"],
+          ["key-outline", "Your keys never leave this device"],
+        ].map(([icon, text]) => (
+          <View key={icon} style={styles.fact}>
+            <Ionicons name={icon} size={15} color={COLORS.success} />
+            <Text style={styles.factText}>{text}</Text>
+          </View>
+        ))}
       </View>
 
-      {/* ──────────────────────────────────────────────────
-          SKELETON  or  REAL CONTENT
-      ────────────────────────────────────────────────── */}
-      {checking ? (
-        <SkeletonScreen COLORS={COLORS} />
-      ) : (
-        <Animated.View style={{ flex: 1, opacity: mainFade }}>
-          <ScrollView
-            contentContainerStyle={{ padding: SPACING.lg, paddingBottom: 140 }}
-            keyboardShouldPersistTaps="handled"
-            showsVerticalScrollIndicator={false}
-          >
-            {/* ── STATUS BANNER ── */}
-            <AnimatedCard delay={50}>
-              <View
-                style={[
-                  ss.card,
-                  {
-                    backgroundColor: isBound
-                      ? COLORS.success + "18"
-                      : COLORS.primaryMuted,
-                    borderWidth: 1,
-                    borderColor: isBound
-                      ? COLORS.success + "40"
-                      : COLORS.primaryLight + "60",
-                    flexDirection: "row",
-                    alignItems: "center",
-                    gap: SPACING.md,
-                    padding: SPACING.md,
-                  },
-                ]}
-              >
-                {/* Icon circle */}
-                <View
-                  style={{
-                    width: 60,
-                    height: 60,
-                    borderRadius: BORDER_RADIUS.round,
-                    backgroundColor: isBound
-                      ? COLORS.success + "22"
-                      : COLORS.primary + "22",
-                    justifyContent: "center",
-                    alignItems: "center",
-                    borderWidth: 1,
-                    borderColor: isBound
-                      ? COLORS.success + "50"
-                      : COLORS.primary + "50",
-                  }}
-                >
-                  {isBound ? (
-                    <Feather
-                      name="check-circle"
-                      size={28}
-                      color={COLORS.success}
-                    />
-                  ) : (
-                    <MaterialCommunityIcons
-                      name="card-account-details-outline"
-                      size={28}
-                      color={COLORS.primary}
-                    />
-                  )}
-                </View>
-                <View style={{ flex: 1 }}>
-                  <Text
-                    style={{
-                      fontSize: FONTS.sizes.base,
-                      fontWeight: "700",
-                      color: COLORS.text,
-                    }}
-                  >
-                    {isBound ? "Identity Bound" : "Not Bound Yet"}
-                  </Text>
-                  <Text
-                    style={{
-                      fontSize: FONTS.sizes.sm,
-                      color: COLORS.textSecondary,
-                      marginTop: 3,
-                      lineHeight: 18,
-                    }}
-                  >
-                    {isBound
-                      ? `@${boundData.username} · ${boundData.email}`
-                      : "Link your username & email once — valid across all EVM chains"}
-                  </Text>
-                </View>
-              </View>
-            </AnimatedCard>
+      <Text style={styles.sectionLabel}>Message you'll sign</Text>
+      <View style={styles.messageBox}>
+        <Text style={styles.message} selectable>
+          {challenge?.message ?? "—"}
+        </Text>
+      </View>
 
-            {/* ── CHAIN COVERAGE ── */}
-            <AnimatedCard delay={130}>
-              <View
-                style={[
-                  ss.card,
-                  { backgroundColor: COLORS.card, ...SHADOWS.small },
-                ]}
-              >
-                <View
-                  style={{
-                    flexDirection: "row",
-                    alignItems: "center",
-                    marginBottom: SPACING.md,
-                  }}
-                >
-                  <Text
-                    style={[
-                      ss.sectionLabel,
-                      {
-                        color: COLORS.textTertiary,
-                        marginBottom: 0,
-                        flex: 1,
-                      },
-                    ]}
-                  >
-                    Supported Networks
-                  </Text>
-                  <View
-                    style={{
-                      backgroundColor: COLORS.primaryMuted,
-                      borderRadius: BORDER_RADIUS.round,
-                      paddingHorizontal: SPACING.sm,
-                      paddingVertical: 3,
-                    }}
-                  >
-                    <Text
-                      style={{
-                        fontSize: 11,
-                        fontWeight: "700",
-                        color: COLORS.primaryDark,
-                      }}
-                    >
-                      {MAINNET_CHAINS.length} chains
-                    </Text>
-                  </View>
-                </View>
+      {!!error && <Text style={styles.error}>{error}</Text>}
 
-                <View
-                  style={{
-                    flexDirection: "row",
-                    flexWrap: "wrap",
-                    margin: -3,
-                  }}
-                >
-                  {MAINNET_CHAINS.map((chain) => (
-                    <ChainPill key={chain.id} chain={chain} COLORS={COLORS} />
-                  ))}
-                </View>
-
-                <View
-                  style={{
-                    flexDirection: "row",
-                    alignItems: "center",
-                    justifyContent: "center",
-                    gap: SPACING.sm,
-                    marginTop: SPACING.md,
-                    paddingTop: SPACING.sm,
-                    borderTopWidth: StyleSheet.hairlineWidth,
-                    borderTopColor: COLORS.divider,
-                  }}
-                >
-                  <View
-                    style={{
-                      width: 6,
-                      height: 6,
-                      borderRadius: 3,
-                      backgroundColor: COLORS.success,
-                    }}
-                  />
-                  <Text
-                    style={{
-                      fontSize: 11,
-                      color: COLORS.textTertiary,
-                      fontWeight: "500",
-                    }}
-                  >
-                    One binding · Same address · Every EVM network
-                  </Text>
-                </View>
-              </View>
-            </AnimatedCard>
-
-            {/* ── ACTIVE WALLET ── */}
-            <AnimatedCard delay={210}>
-              <View
-                style={[
-                  ss.card,
-                  { backgroundColor: COLORS.card, ...SHADOWS.small },
-                ]}
-              >
-                <Text style={[ss.sectionLabel, { color: COLORS.textTertiary }]}>
-                  Active Wallet
-                </Text>
-                {walletAddress ? (
-                  <View
-                    style={[
-                      ss.addressRow,
-                      { backgroundColor: COLORS.cardElevated },
-                    ]}
-                  >
-                    <FontAwesome5
-                      name="wallet"
-                      size={20}
-                      color={COLORS.textSecondary}
-                    />
-                    <Text
-                      style={[ss.addressText, { color: COLORS.textSecondary }]}
-                      numberOfLines={1}
-                    >
-                      {shortAddr}
-                    </Text>
-                    <View
-                      style={{
-                        flexDirection: "row",
-                        alignItems: "center",
-                        gap: 5,
-                      }}
-                    >
-                      <View
-                        style={{
-                          width: 6,
-                          height: 6,
-                          borderRadius: 3,
-                          backgroundColor: COLORS.success,
-                        }}
-                      />
-                      <Text
-                        style={{
-                          fontSize: 10,
-                          color: COLORS.success,
-                          fontWeight: "600",
-                        }}
-                      >
-                        LIVE
-                      </Text>
-                    </View>
-                  </View>
-                ) : (
-                  <Text
-                    style={{ color: COLORS.error, fontSize: FONTS.sizes.sm }}
-                  >
-                    No wallet loaded — please create or import one first.
-                  </Text>
-                )}
-              </View>
-            </AnimatedCard>
-
-            {/* ── BOUND SUMMARY  or  BIND FORM ── */}
-            <AnimatedCard delay={290}>
-              {isBound ? (
-                // ── Bound state — show current binding details ──
-                <View
-                  style={[
-                    ss.card,
-                    {
-                      backgroundColor: COLORS.card,
-                      borderLeftWidth: 3,
-                      borderLeftColor: COLORS.success,
-                      ...SHADOWS.small,
-                    },
-                  ]}
-                >
-                  <Text
-                    style={[ss.sectionLabel, { color: COLORS.textTertiary }]}
-                  >
-                    Current Binding
-                  </Text>
-
-                  <InfoRow
-                    label="Username"
-                    value={`@${boundData.username}`}
-                    COLORS={COLORS}
-                  />
-                  <InfoRow
-                    label="Email"
-                    value={boundData.email}
-                    COLORS={COLORS}
-                  />
-                  <InfoRow
-                    label="Bound on"
-                    value={new Date(boundData.created_at).toLocaleDateString(
-                      "en-US",
-                      {
-                        year: "numeric",
-                        month: "short",
-                        day: "numeric",
-                      },
-                    )}
-                    COLORS={COLORS}
-                  />
-                  <InfoRow
-                    label="Coverage"
-                    value={`All ${MAINNET_CHAINS.length} EVM chains`}
-                    COLORS={COLORS}
-                    last
-                  />
-                </View>
-              ) : (
-                // ── Unbound state — show bind form ──
-                <View
-                  style={[
-                    ss.card,
-                    { backgroundColor: COLORS.card, ...SHADOWS.small },
-                  ]}
-                >
-                  <Text
-                    style={[ss.sectionLabel, { color: COLORS.textTertiary }]}
-                  >
-                    Create Binding
-                  </Text>
-
-                  <ThemedInput
-                    label="Username"
-                    value={username}
-                    onChangeText={setUsername}
-                    placeholder="e.g. alice123"
-                    iconName="user"
-                    iconLib="Feather"
-                    COLORS={COLORS}
-                  />
-
-                  <ThemedInput
-                    label="Email Address"
-                    value={email}
-                    onChangeText={setEmail}
-                    placeholder="e.g. alice@example.com"
-                    keyboardType="email-address"
-                    iconName="mail"
-                    iconLib="Feather"
-                    COLORS={COLORS}
-                  />
-
-                  {/* Permanent-action warning using theme warning colors */}
-                  <View
-                    style={{
-                      flexDirection: "row",
-                      gap: SPACING.sm,
-                      backgroundColor: isDark
-                        ? COLORS.warning + "18"
-                        : COLORS.warning + "12",
-                      borderRadius: BORDER_RADIUS.md,
-                      padding: SPACING.sm + 2,
-                      marginBottom: SPACING.md,
-                      borderWidth: 1,
-                      borderColor: COLORS.warning + "30",
-                    }}
-                  >
-                    <Feather
-                      name="alert-triangle"
-                      size={14}
-                      color={COLORS.warning}
-                      style={{ marginTop: 1 }}
-                    />
-                    <Text
-                      style={{
-                        fontSize: FONTS.sizes.xs,
-                        color: COLORS.textSecondary,
-                        flex: 1,
-                        lineHeight: 17,
-                      }}
-                    >
-                      This binding is{" "}
-                      <Text style={{ fontWeight: "700", color: COLORS.text }}>
-                        permanent
-                      </Text>
-                      . Each username, email and wallet address can only be
-                      linked once.
-                    </Text>
-                  </View>
-
-                  <PrimaryButton
-                    label={`Bind to All ${MAINNET_CHAINS.length} Chains`}
-                    onPress={handleBind}
-                    loading={loading}
-                    disabled={!walletAddress}
-                    COLORS={COLORS}
-                  />
-                </View>
-              )}
-            </AnimatedCard>
-
-            {/* ── LOOKUP TOOL ── */}
-            <AnimatedCard delay={370}>
-              <View
-                style={[
-                  ss.card,
-                  { backgroundColor: COLORS.card, ...SHADOWS.small },
-                ]}
-              >
-                <Text style={[ss.sectionLabel, { color: COLORS.textTertiary }]}>
-                  Resolve a Wallet
-                </Text>
-
-                <ThemedInput
-                  label="Username or Email"
-                  value={lookupQuery}
-                  onChangeText={(v) => {
-                    setLookup(v);
-                    setLookupRes(null);
-                    setLookupErr(null);
-                  }}
-                  placeholder="e.g. alice123 or alice@example.com"
-                  iconName="search"
-                  iconLib="Feather"
-                  COLORS={COLORS}
-                />
-
-                <OutlineButton
-                  label="Resolve Wallet Address"
-                  onPress={handleLookup}
-                  loading={loading}
-                  disabled={!lookupQuery.trim()}
-                  COLORS={COLORS}
-                />
-
-                {/* Result card */}
-                {lookupResult && (
-                  <View
-                    style={[
-                      ss.resultCard,
-                      {
-                        backgroundColor: COLORS.success + "18",
-                        borderWidth: 1,
-                        borderColor: COLORS.success + "40",
-                        marginTop: SPACING.md,
-                      },
-                    ]}
-                  >
-                    <View
-                      style={{
-                        flexDirection: "row",
-                        alignItems: "center",
-                        gap: 6,
-                        marginBottom: SPACING.sm,
-                      }}
-                    >
-                      <Feather
-                        name="check-circle"
-                        size={13}
-                        color={COLORS.success}
-                      />
-                      <Text
-                        style={[
-                          ss.resultLabel,
-                          { color: COLORS.success, marginBottom: 0 },
-                        ]}
-                      >
-                        Wallet Found
-                      </Text>
-                    </View>
-                    {[
-                      ["Username", `@${lookupResult.username}`],
-                      ["Email", lookupResult.email],
-                      [
-                        "Address",
-                        `${lookupResult.wallet_address.slice(0, 10)}···${lookupResult.wallet_address.slice(-8)}`,
-                      ],
-                    ].map(([k, v], i, arr) => (
-                      <View key={k}>
-                        <View style={ss.infoRow}>
-                          <Text
-                            style={[ss.infoKey, { color: COLORS.textTertiary }]}
-                          >
-                            {k}
-                          </Text>
-                          <Text style={[ss.infoVal, { color: COLORS.text }]}>
-                            {v}
-                          </Text>
-                        </View>
-                        {i < arr.length - 1 && <Divider COLORS={COLORS} />}
-                      </View>
-                    ))}
-                  </View>
-                )}
-
-                {/* Error card */}
-                {lookupError && (
-                  <View
-                    style={[
-                      ss.resultCard,
-                      {
-                        backgroundColor: COLORS.error + "12",
-                        borderWidth: 1,
-                        borderColor: COLORS.error + "35",
-                        flexDirection: "row",
-                        alignItems: "center",
-                        gap: SPACING.sm,
-                        marginTop: SPACING.md,
-                      },
-                    ]}
-                  >
-                    <Feather name="x-circle" size={18} color={COLORS.error} />
-                    <Text
-                      style={{
-                        fontSize: FONTS.sizes.sm,
-                        color: COLORS.error,
-                        flex: 1,
-                      }}
-                    >
-                      {lookupError}
-                    </Text>
-                  </View>
-                )}
-              </View>
-            </AnimatedCard>
-          </ScrollView>
-        </Animated.View>
-      )}
-    </KeyboardAvoidingView>
+      <TouchableOpacity
+        style={[styles.primaryBtn, !!signStep && styles.disabled]}
+        onPress={() => setShowPin(true)}
+        disabled={!!signStep}
+      >
+        {signStep ? (
+          <View style={styles.row}>
+            <ActivityIndicator color={COLORS.background} />
+            <Text style={styles.primaryText}>{STEP_LABEL[signStep]}</Text>
+          </View>
+        ) : (
+          <View style={styles.row}>
+            <Ionicons name="finger-print" size={18} color={COLORS.background} />
+            <Text style={styles.primaryText}>Sign & link</Text>
+          </View>
+        )}
+      </TouchableOpacity>
+      <TouchableOpacity style={styles.linkBtn} onPress={() => setMode("username")} disabled={!!signStep}>
+        <Text style={styles.linkText}>Back</Text>
+      </TouchableOpacity>
+    </>
   );
-};
 
-export default BindWalletScreen;
+  return (
+    <View style={[styles.container, { paddingTop: insets.top }]}>
+      <View style={styles.header}>
+        <TouchableOpacity onPress={() => navigation.goBack()} style={styles.backBtn} hitSlop={8}>
+          <Ionicons name="chevron-back" size={22} color={COLORS.text} />
+        </TouchableOpacity>
+        <Text style={styles.title}>Wallet identity</Text>
+        <View style={styles.backBtn} />
+      </View>
+
+      <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === "ios" ? "padding" : undefined}>
+        <ScrollView contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
+          {AccountPill}
+
+          {loading ? (
+            <ActivityIndicator color={COLORS.primary} style={{ marginTop: 48 }} />
+          ) : loadError ? (
+            <View style={styles.center}>
+              <Ionicons name="cloud-offline-outline" size={28} color={COLORS.textTertiary} />
+              <Text style={styles.lead}>{loadError}</Text>
+              <TouchableOpacity style={styles.secondaryBtn} onPress={load}>
+                <Text style={styles.secondaryText}>Try again</Text>
+              </TouchableOpacity>
+            </View>
+          ) : !solanaAddress ? (
+            <View style={styles.center}>
+              <Ionicons name="time-outline" size={28} color={COLORS.textTertiary} />
+              <Text style={styles.lead}>
+                This account's Solana address is still being set up. Lock and
+                unlock your wallet, then come back.
+              </Text>
+            </View>
+          ) : mode === "linked" && identity ? (
+            renderLinked()
+          ) : mode === "prove" ? (
+            renderProve()
+          ) : (
+            renderUsername()
+          )}
+        </ScrollView>
+      </KeyboardAvoidingView>
+
+      <PasscodeModal
+        visible={showPin}
+        title="Enter PIN"
+        subtitle="Unlock your keys to sign"
+        onClose={() => setShowPin(false)}
+        onSuccess={handlePin}
+      />
+    </View>
+  );
+}
+
+// ─── Step indicator ──────────────────────────────────────────────────────────
+const Steps = ({ active, styles }) => (
+  <View style={styles.steps}>
+    {["Username", "Prove ownership", "Linked"].map((label, i) => (
+      <View key={label} style={styles.stepItem}>
+        <View style={[styles.stepDot, i <= active && styles.stepDotOn]}>
+          <Text style={[styles.stepNum, i <= active && styles.stepNumOn]}>{i + 1}</Text>
+        </View>
+        <Text style={[styles.stepLabel, i === active && styles.stepLabelOn]}>{label}</Text>
+      </View>
+    ))}
+  </View>
+);
+
+// ─── Styles ──────────────────────────────────────────────────────────────────
+const makeStyles = ({ COLORS: C, SPACING, FONTS, BORDER_RADIUS }) =>
+  StyleSheet.create({
+    container: { flex: 1, backgroundColor: C.background },
+    header: {
+      flexDirection: "row",
+      alignItems: "center",
+      justifyContent: "space-between",
+      paddingHorizontal: SPACING.md,
+      paddingVertical: SPACING.sm,
+    },
+    backBtn: { width: 36, height: 36, alignItems: "center", justifyContent: "center" },
+    title: { fontSize: FONTS.sizes.lg, fontWeight: "800", color: C.text },
+    content: { padding: SPACING.lg, paddingBottom: 64, gap: SPACING.md },
+    center: { alignItems: "center", gap: SPACING.sm, marginTop: 40 },
+    row: { flexDirection: "row", alignItems: "center", gap: 8 },
+
+    accountPill: {
+      flexDirection: "row",
+      alignItems: "center",
+      gap: 8,
+      alignSelf: "center",
+      paddingHorizontal: 14,
+      height: 34,
+      borderRadius: 17,
+      backgroundColor: C.surface,
+      borderWidth: 1,
+      borderColor: C.border,
+      maxWidth: "100%",
+    },
+    accountDot: { width: 8, height: 8, borderRadius: 4, backgroundColor: C.success },
+    accountText: { fontSize: 13, fontWeight: "600", color: C.text, flexShrink: 1 },
+    accountSwitch: { fontSize: 12, fontWeight: "800", color: C.primaryDark ?? C.primary },
+
+    steps: { flexDirection: "row", justifyContent: "space-between", marginTop: SPACING.sm },
+    stepItem: { alignItems: "center", flex: 1, gap: 6 },
+    stepDot: {
+      width: 26,
+      height: 26,
+      borderRadius: 13,
+      borderWidth: 1.5,
+      borderColor: C.border,
+      alignItems: "center",
+      justifyContent: "center",
+    },
+    stepDotOn: { backgroundColor: C.primary, borderColor: C.primary },
+    stepNum: { fontSize: 12, fontWeight: "800", color: C.textTertiary },
+    stepNumOn: { color: C.background },
+    stepLabel: { fontSize: 11, color: C.textTertiary, fontWeight: "600" },
+    stepLabelOn: { color: C.text },
+
+    h1: { fontSize: 26, fontWeight: "800", color: C.text, letterSpacing: -0.5, marginTop: SPACING.sm },
+    lead: { fontSize: FONTS.sizes.sm, lineHeight: 20, color: C.textSecondary, textAlign: "left" },
+
+    inputWrap: {
+      flexDirection: "row",
+      alignItems: "center",
+      height: 58,
+      paddingHorizontal: 16,
+      borderRadius: 18,
+      borderWidth: 1.5,
+      borderColor: C.border,
+      backgroundColor: C.surface,
+      gap: 4,
+    },
+    at: { fontSize: 22, fontWeight: "800", color: C.textTertiary },
+    input: { flex: 1, fontSize: 20, fontWeight: "700", color: C.text, paddingVertical: 0 },
+    hint: { fontSize: 12, color: C.textTertiary, marginTop: -4 },
+    error: { fontSize: 13, color: C.error },
+
+    primaryBtn: {
+      height: 54,
+      borderRadius: 27,
+      backgroundColor: C.primary,
+      alignItems: "center",
+      justifyContent: "center",
+      marginTop: SPACING.sm,
+    },
+    primaryText: { fontSize: 16, fontWeight: "800", color: C.background },
+    disabled: { opacity: 0.45 },
+    secondaryBtn: {
+      height: 48,
+      borderRadius: 24,
+      borderWidth: 1,
+      borderColor: C.border,
+      alignItems: "center",
+      justifyContent: "center",
+      paddingHorizontal: 20,
+    },
+    secondaryText: { fontSize: 14, fontWeight: "700", color: C.text },
+    linkBtn: { alignSelf: "center", padding: 8 },
+    linkText: { fontSize: 13, fontWeight: "700", color: C.textSecondary },
+
+    facts: {
+      backgroundColor: C.surface,
+      borderRadius: BORDER_RADIUS.lg,
+      borderWidth: 1,
+      borderColor: C.border,
+      padding: SPACING.md,
+      gap: 10,
+    },
+    fact: { flexDirection: "row", alignItems: "center", gap: 10 },
+    factText: { fontSize: 13, color: C.text, flex: 1 },
+    sectionLabel: {
+      fontSize: 11,
+      fontWeight: "800",
+      letterSpacing: 0.6,
+      textTransform: "uppercase",
+      color: C.textTertiary,
+    },
+    messageBox: {
+      borderRadius: BORDER_RADIUS.lg,
+      borderWidth: 1,
+      borderColor: C.border,
+      backgroundColor: C.cardElevated ?? C.surface,
+      padding: SPACING.md,
+    },
+    message: {
+      fontFamily: Platform.select({ ios: "Menlo", default: "monospace" }),
+      fontSize: 11,
+      lineHeight: 16,
+      color: C.textSecondary,
+    },
+
+    idCard: {
+      alignItems: "center",
+      padding: SPACING.lg,
+      borderRadius: 28,
+      backgroundColor: C.surface,
+      borderWidth: 1,
+      borderColor: C.border,
+      gap: 8,
+      marginTop: SPACING.sm,
+    },
+    avatar: {
+      width: 72,
+      height: 72,
+      borderRadius: 36,
+      backgroundColor: C.primary,
+      alignItems: "center",
+      justifyContent: "center",
+    },
+    avatarText: { fontSize: 32, fontWeight: "900", color: C.background },
+    handle: { fontSize: 28, fontWeight: "900", color: C.text, letterSpacing: -0.6 },
+    verified: {
+      flexDirection: "row",
+      alignItems: "center",
+      gap: 6,
+      paddingHorizontal: 10,
+      paddingVertical: 4,
+      borderRadius: 10,
+      backgroundColor: `${C.success}18`,
+    },
+    verifiedText: { fontSize: 12, fontWeight: "700", color: C.success },
+    addrList: { alignSelf: "stretch", marginTop: SPACING.sm, gap: 8 },
+    addrRow: {
+      flexDirection: "row",
+      alignItems: "center",
+      padding: 12,
+      borderRadius: 16,
+      backgroundColor: C.background,
+      gap: 10,
+    },
+    addrLabel: { fontSize: 11, fontWeight: "800", color: C.textTertiary, textTransform: "uppercase", letterSpacing: 0.6 },
+    addrValue: {
+      fontSize: 15,
+      fontWeight: "700",
+      color: C.text,
+      fontFamily: Platform.select({ ios: "Menlo", default: "monospace" }),
+      marginTop: 2,
+    },
+    addrSub: { fontSize: 11, color: C.textTertiary, marginTop: 2 },
+    note: { flexDirection: "row", gap: 10, alignItems: "flex-start" },
+    noteText: { flex: 1, fontSize: 13, lineHeight: 19, color: C.textSecondary },
+    noteStrong: { fontWeight: "800", color: C.text },
+  });

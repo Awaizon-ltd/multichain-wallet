@@ -8,7 +8,7 @@ export const API_CONFIG = {
 
   // Use this in your code
   BASE_URL: __DEV__
-    ? "http://10.245.212.189:3030/api"
+    ? "http://192.168.18.2:3030/api"
     : "https://api.awarizon.com/api",
 
   // Endpoints
@@ -37,6 +37,11 @@ export const API_CONFIG = {
     MARKET_RESOLVE: "/market/resolve",
     MARKET_COIN: (id) => `/market/coins/${encodeURIComponent(id)}`,
     MARKET_CHART: (id) => `/market/coins/${encodeURIComponent(id)}/chart`,
+    // Advanced Swap — candles for any pair (incl. cross-chain) + on-chain stats
+    MARKET_PAIR_CANDLES: "/market/pair/candles",
+    MARKET_ONCHAIN_TOKEN: "/market/onchain/token",
+    // Native-coin prices for portfolios (one cached CoinGecko call for all wallets)
+    MARKET_NATIVE_PRICES: "/market/native-prices",
   },
 
   // Cache duration (1 hour)

@@ -152,7 +152,15 @@ export const SUPPORTED_CHAINS = {
   // },
 };
 
-export const DEFAULT_CHAIN = SUPPORTED_CHAINS.ARC;
+// The wallet's default networks, in display order: enabled out of the box
+// for new wallets and featured first in network pickers. "SOLANA" is the
+// non-EVM chain from constants/nonEvmChain.js (listed by id here so this file
+// stays import-free).
+export const DEFAULT_NETWORK_IDS = ["SOLANA", 8453, 4663, 1]; // Solana, Base, Robinhood Chain, Ethereum
+
+// The EVM chain the dApp browser / signing opens on — the first EVM chain in
+// DEFAULT_NETWORK_IDS. (Solana can't be the active signing chain.)
+export const DEFAULT_CHAIN = SUPPORTED_CHAINS.BASE;
 
 export const getChainById = (chainId) =>
   Object.values(SUPPORTED_CHAINS).find((chain) => chain.id === chainId);

@@ -2,7 +2,14 @@
 // Trending tokens across chains, grouped into scrollable tabs
 // (All · Arc · Robinhood · Base · BNB · Meme · RWA). Data comes from our
 // backend, which fetches it from CoinGecko once and caches it for everyone.
-import React, { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import React, {
+  memo,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import {
   View,
   Text,
@@ -36,14 +43,36 @@ const TAB_ICONS = {
 // ── Skeleton row ──────────────────────────────────────────────────────────────
 const SkeletonRow = memo(({ COLORS, pulse }) => (
   <Animated.View style={[styles.row, { opacity: pulse }]}>
-    <View style={[styles.skelCircle, { backgroundColor: COLORS.cardElevated }]} />
+    <View
+      style={[styles.skelCircle, { backgroundColor: COLORS.cardElevated }]}
+    />
     <View style={{ flex: 1, gap: 6 }}>
-      <View style={[styles.skelLine, { width: "45%", backgroundColor: COLORS.cardElevated }]} />
-      <View style={[styles.skelLine, { width: "28%", backgroundColor: COLORS.cardElevated }]} />
+      <View
+        style={[
+          styles.skelLine,
+          { width: "45%", backgroundColor: COLORS.cardElevated },
+        ]}
+      />
+      <View
+        style={[
+          styles.skelLine,
+          { width: "28%", backgroundColor: COLORS.cardElevated },
+        ]}
+      />
     </View>
     <View style={{ alignItems: "flex-end", gap: 6 }}>
-      <View style={[styles.skelLine, { width: 64, backgroundColor: COLORS.cardElevated }]} />
-      <View style={[styles.skelLine, { width: 44, backgroundColor: COLORS.cardElevated }]} />
+      <View
+        style={[
+          styles.skelLine,
+          { width: 64, backgroundColor: COLORS.cardElevated },
+        ]}
+      />
+      <View
+        style={[
+          styles.skelLine,
+          { width: 44, backgroundColor: COLORS.cardElevated },
+        ]}
+      />
     </View>
   </Animated.View>
 ));
@@ -59,16 +88,29 @@ const TokenRow = memo(({ token, index, badgeUri, COLORS, onPress, isLast }) => {
       onPress={() => onPress(token)}
       style={({ pressed }) => [
         styles.row,
-        !isLast && { borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: COLORS.divider },
+        !isLast && {
+          borderBottomWidth: StyleSheet.hairlineWidth,
+          borderBottomColor: COLORS.divider,
+        },
         pressed && { backgroundColor: COLORS.cardElevated },
       ]}
     >
-      <Text style={[styles.rank, { color: COLORS.textTertiary }]}>{index + 1}</Text>
-      <CoinLogo uri={token.image} symbol={token.symbol} size={38} badgeUri={badgeUri} />
+      <Text style={[styles.rank, { color: COLORS.textTertiary }]}>
+        {index + 1}
+      </Text>
+      <CoinLogo
+        uri={token.image}
+        symbol={token.symbol}
+        size={38}
+        badgeUri={badgeUri}
+      />
 
       <View style={styles.rowMain}>
         <View style={styles.nameLine}>
-          <Text style={[styles.symbol, { color: COLORS.text }]} numberOfLines={1}>
+          <Text
+            style={[styles.symbol, { color: COLORS.text }]}
+            numberOfLines={1}
+          >
             {token.symbol}
           </Text>
           {token.tag === "rwa" && (
@@ -80,21 +122,33 @@ const TokenRow = memo(({ token, index, badgeUri, COLORS, onPress, isLast }) => {
             <Ionicons name="flame" size={12} color={COLORS.warning} />
           )}
         </View>
-        <Text style={[styles.sub, { color: COLORS.textTertiary }]} numberOfLines={1}>
+        <Text
+          style={[styles.sub, { color: COLORS.textTertiary }]}
+          numberOfLines={1}
+        >
           {token.name}
           {token.marketCap ? ` · ${formatCompactUsd(token.marketCap)}` : ""}
         </Text>
       </View>
 
-      <Sparkline data={token.sparkline} width={54} height={26} color={trendColor} />
+      <Sparkline
+        data={token.sparkline}
+        width={54}
+        height={26}
+        color={trendColor}
+      />
 
       <View style={styles.priceCol}>
         <Text style={[styles.price, { color: COLORS.text }]} numberOfLines={1}>
           {formatPrice(token.price)}
         </Text>
         {pct ? (
-          <View style={[styles.changePill, { backgroundColor: trendColor + "1F" }]}>
-            <Text style={[styles.changeText, { color: trendColor }]}>{pct}</Text>
+          <View
+            style={[styles.changePill, { backgroundColor: trendColor + "1F" }]}
+          >
+            <Text style={[styles.changeText, { color: trendColor }]}>
+              {pct}
+            </Text>
           </View>
         ) : null}
       </View>
@@ -103,7 +157,12 @@ const TokenRow = memo(({ token, index, badgeUri, COLORS, onPress, isLast }) => {
 });
 
 // ── Main component ────────────────────────────────────────────────────────────
-const TrendingTokens = ({ onTokenPress, refreshKey = 0, hideHeader = false, onTabChange }) => {
+const TrendingTokens = ({
+  onTokenPress,
+  refreshKey = 0,
+  hideHeader = false,
+  onTabChange,
+}) => {
   const { COLORS } = useTheme();
   const { getChain } = useChain();
   const [data, setData] = useState(null);
@@ -134,8 +193,16 @@ const TrendingTokens = ({ onTokenPress, refreshKey = 0, hideHeader = false, onTa
     if (!loading) return;
     const loop = Animated.loop(
       Animated.sequence([
-        Animated.timing(pulse, { toValue: 1, duration: 700, useNativeDriver: true }),
-        Animated.timing(pulse, { toValue: 0.5, duration: 700, useNativeDriver: true }),
+        Animated.timing(pulse, {
+          toValue: 1,
+          duration: 700,
+          useNativeDriver: true,
+        }),
+        Animated.timing(pulse, {
+          toValue: 0.5,
+          duration: 700,
+          useNativeDriver: true,
+        }),
       ]),
     );
     loop.start();
@@ -148,7 +215,11 @@ const TrendingTokens = ({ onTokenPress, refreshKey = 0, hideHeader = false, onTa
       Haptics.selectionAsync().catch(() => {});
       fade.setValue(0);
       setActiveKey(key);
-      Animated.timing(fade, { toValue: 1, duration: 220, useNativeDriver: true }).start();
+      Animated.timing(fade, {
+        toValue: 1,
+        duration: 220,
+        useNativeDriver: true,
+      }).start();
     },
     [activeKey, fade],
   );
@@ -184,7 +255,9 @@ const TrendingTokens = ({ onTokenPress, refreshKey = 0, hideHeader = false, onTa
             <Text style={[styles.title, { color: COLORS.text }]}>Trending</Text>
           </View>
           {updated ? (
-            <Text style={[styles.updated, { color: COLORS.textTertiary }]}>Updated {updated}</Text>
+            <Text style={[styles.updated, { color: COLORS.textTertiary }]}>
+              Updated {updated}
+            </Text>
           ) : null}
         </View>
       )}
@@ -205,8 +278,14 @@ const TrendingTokens = ({ onTokenPress, refreshKey = 0, hideHeader = false, onTa
               style={[
                 styles.tab,
                 active
-                  ? { backgroundColor: COLORS.primary, borderColor: COLORS.primary }
-                  : { backgroundColor: COLORS.surface, borderColor: COLORS.border },
+                  ? {
+                      backgroundColor: COLORS.primary,
+                      borderColor: COLORS.primary,
+                    }
+                  : {
+                      backgroundColor: COLORS.surface,
+                      borderColor: COLORS.border,
+                    },
               ]}
             >
               {chainIcon ? (
@@ -233,13 +312,26 @@ const TrendingTokens = ({ onTokenPress, refreshKey = 0, hideHeader = false, onTa
       </ScrollView>
 
       {/* List */}
-      <View style={[styles.card, { backgroundColor: COLORS.surface, borderColor: COLORS.border }]}>
+      <View
+        style={[
+          styles.card,
+          { backgroundColor: COLORS.surface, borderColor: COLORS.border },
+        ]}
+      >
         {loading && !data ? (
-          [0, 1, 2, 3].map((i) => <SkeletonRow key={i} COLORS={COLORS} pulse={pulse} />)
+          [0, 1, 2, 3].map((i) => (
+            <SkeletonRow key={i} COLORS={COLORS} pulse={pulse} />
+          ))
         ) : error && !data ? (
           <View style={styles.state}>
-            <Ionicons name="cloud-offline-outline" size={28} color={COLORS.textTertiary} />
-            <Text style={[styles.stateText, { color: COLORS.textSecondary }]}>{error}</Text>
+            <Ionicons
+              name="cloud-offline-outline"
+              size={28}
+              color={COLORS.textTertiary}
+            />
+            <Text style={[styles.stateText, { color: COLORS.textSecondary }]}>
+              {error}
+            </Text>
             <Pressable
               onPress={() => {
                 setLoading(true);
@@ -252,7 +344,11 @@ const TrendingTokens = ({ onTokenPress, refreshKey = 0, hideHeader = false, onTa
           </View>
         ) : !activeTab?.tokens?.length ? (
           <View style={styles.state}>
-            <Ionicons name="hourglass-outline" size={26} color={COLORS.textTertiary} />
+            <Ionicons
+              name="hourglass-outline"
+              size={26}
+              color={COLORS.textTertiary}
+            />
             <Text style={[styles.stateText, { color: COLORS.textSecondary }]}>
               Nothing trending here right now. Check back soon.
             </Text>
@@ -321,8 +417,17 @@ const styles = StyleSheet.create({
   tagText: { fontSize: 10, fontWeight: "800", letterSpacing: 0.4 },
   priceCol: { alignItems: "flex-end", minWidth: 78 },
   price: { fontSize: 14, fontWeight: "700", fontVariant: ["tabular-nums"] },
-  changePill: { marginTop: 4, paddingHorizontal: 6, paddingVertical: 2, borderRadius: 6 },
-  changeText: { fontSize: 11, fontWeight: "800", fontVariant: ["tabular-nums"] },
+  changePill: {
+    marginTop: 4,
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 6,
+  },
+  changeText: {
+    fontSize: 11,
+    fontWeight: "800",
+    fontVariant: ["tabular-nums"],
+  },
   skelCircle: { width: 38, height: 38, borderRadius: 19 },
   skelLine: { height: 10, borderRadius: 5 },
   state: { alignItems: "center", padding: 24, gap: 10 },

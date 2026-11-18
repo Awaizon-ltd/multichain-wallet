@@ -1,107 +1,57 @@
+// routes/walletRoutes.js
+// Legacy username lookups, kept for the app's Send / payment-request screens
+// (they read `data.wallet_address`). They now resolve through signature-
+// verified identities (routes/identityRoutes.js) — never through the old
+// unverified `users` table — and only by username: email binding is gone.
 const express = require("express");
 const router = express.Router();
+const identity = require("../services/identityService");
 
-const {
-  bindWallet,
-  resolveWallet,
-  resolveByWalletAddress,
-  isValidWalletAddress,
-} = require("../services/walletService");
-const {
-  validateBind,
-  validateResolve,
-} = require("../middleware/validateWallet");
-
-// ────────────────────────────────────────────────────────
-// POST /api/wallets/bind
-// Body: { username, email, wallet_address }
-// ────────────────────────────────────────────────────────
-router.post("/bind", validateBind, async (req, res, next) => {
-  const { username, email, wallet_address } = req.validatedBody;
-
-  if (!isValidWalletAddress(wallet_address)) {
-    return res.status(422).json({
-      success: false,
-      code: "INVALID_WALLET_FORMAT",
-      message:
-        "Wallet address must be a valid EVM address (0x + 40 hex characters).",
-    });
-  }
-
-  try {
-    const user = await bindWallet({ username, email, wallet_address });
-    return res.status(201).json({
-      success: true,
-      message: "Wallet bound successfully.",
-      data: user,
-    });
-  } catch (err) {
-    if (err.status && err.code) {
-      return res.status(err.status).json({
-        success: false,
-        code: err.code,
-        message: err.message,
-      });
-    }
-    next(err);
-  }
+// Same shape the app already reads, plus the Solana address
+const legacyShape = (row) => ({
+  username: row.username,
+  wallet_address: row.evm_address,
+  evm_address: row.evm_address,
+  solana_address: row.solana_address,
+  verified_at: row.verified_at,
 });
 
-// ────────────────────────────────────────────────────────
-// GET /api/wallets/resolve?email_or_username=
-// Resolve wallet by username or email
-// ────────────────────────────────────────────────────────
-router.get("/resolve", validateResolve, async (req, res, next) => {
-  const { email_or_username } = req.validatedQuery;
+const notFound = (res, message) =>
+  res.status(404).json({ success: false, code: "NOT_FOUND", message });
+
+// POST /api/wallets/bind — retired: binding now requires a signature
+router.post("/bind", (_req, res) =>
+  res.status(410).json({
+    success: false,
+    code: "ENDPOINT_RETIRED",
+    message: "Linking now requires proving wallet ownership. Use /api/identity/challenge and /api/identity/bind.",
+  }),
+);
+
+// GET /api/wallets/resolve?email_or_username=   (username only now)
+router.get("/resolve", async (req, res, next) => {
+  const value = String(req.query.email_or_username ?? "").trim();
+  if (!value) {
+    return res.status(400).json({ success: false, code: "MISSING_PARAM", message: "A username is required." });
+  }
+  if (value.includes("@") && !value.startsWith("@")) {
+    return notFound(res, "Email lookup is no longer supported — use the recipient's username.");
+  }
   try {
-    const user = await resolveWallet(email_or_username);
-    if (!user) {
-      return res.status(404).json({
-        success: false,
-        code: "NOT_FOUND",
-        message: "No wallet found for the given email or username.",
-      });
-    }
-    return res.status(200).json({ success: true, data: user });
+    const row = await identity.getByUsername(value);
+    if (!row) return notFound(res, "No wallet is linked to that username.");
+    res.json({ success: true, data: legacyShape(row) });
   } catch (err) {
     next(err);
   }
 });
 
-// ────────────────────────────────────────────────────────
-// GET /api/wallets/resolve-by-address?wallet_address=
-// Resolve user identity from a wallet address.
-// Used by the app on screen load to check if THIS wallet is already bound.
-// ────────────────────────────────────────────────────────
+// GET /api/wallets/resolve-by-address?wallet_address=   (EVM or Solana)
 router.get("/resolve-by-address", async (req, res, next) => {
-  const { wallet_address } = req.query;
-
-  if (!wallet_address || typeof wallet_address !== "string") {
-    return res.status(400).json({
-      success: false,
-      code: "MISSING_PARAM",
-      message: "`wallet_address` query param is required.",
-    });
-  }
-
-  if (!isValidWalletAddress(wallet_address.trim())) {
-    return res.status(422).json({
-      success: false,
-      code: "INVALID_WALLET_FORMAT",
-      message: "Must be a valid EVM address (0x + 40 hex characters).",
-    });
-  }
-
   try {
-    const user = await resolveByWalletAddress(wallet_address);
-    if (!user) {
-      return res.status(404).json({
-        success: false,
-        code: "NOT_FOUND",
-        message: "This wallet address is not bound to any identity.",
-      });
-    }
-    return res.status(200).json({ success: true, data: user });
+    const row = await identity.getByAddress(req.query.wallet_address);
+    if (!row) return notFound(res, "This wallet isn't linked to a username.");
+    res.json({ success: true, data: legacyShape(row) });
   } catch (err) {
     next(err);
   }

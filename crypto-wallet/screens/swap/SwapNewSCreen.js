@@ -23,17 +23,20 @@ import { SafeAreaView } from "react-native-safe-area-context";
 import { useNavigation, useRoute } from "@react-navigation/native";
 import { useTheme } from "../../contexts/ThemeContext";
 import { useWallet } from "../../contexts/WalletContext";
-import { useChain } from "../../contexts/ChainContext";
+import { useChain, isSolanaChain } from "../../contexts/ChainContext";
 import { useSwap } from "../../hooks/useSwap";
 import { TokenSelectorModal } from "../../components/swap/TokenSelectorModal";
 import { SwapConfirmModal } from "../../components/swap/SwapConfirmModal";
-import ChainSwitcher from "../../components/wallet/ChainSwitcher";
+import ChainSwitcher, {
+  ChainSelectorButton,
+} from "../../components/wallet/ChainSwitcher";
 import TrendingTokens from "../../components/swap/TrendingTokens";
 // ✅ Pull balance utils directly — no WalletContext wrapper needed
 import {
   getTokenBalance as fetchERC20Balance,
   getNativeBalance,
 } from "../../utils/blockchain/Balances";
+import { getSolBalance, getSplTokenBalance } from "../../utils/SolanaService";
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 const SLIPPAGE_OPTIONS = [0.005, 0.01, 0.02, 0.05];
@@ -273,6 +276,7 @@ const TokenInputBox = memo(
     balance,
     usdPrice,
     onMaxPress,
+    chain,
     theme,
   }) => {
     const { COLORS, SPACING, FONTS, BORDER_RADIUS, SHADOWS } = theme;
@@ -316,6 +320,19 @@ const TokenInputBox = memo(
             letterSpacing: 0.5,
           },
           body: { flexDirection: "row", alignItems: "center" },
+          tokenCol: { alignItems: "flex-end", gap: 4 },
+          chainTag: {
+            flexDirection: "row",
+            alignItems: "center",
+            gap: 4,
+            paddingRight: 2,
+          },
+          chainTagIcon: { width: 12, height: 12, borderRadius: 6 },
+          chainTagText: {
+            fontSize: FONTS.sizes.xs,
+            color: COLORS.textTertiary,
+            fontWeight: "600",
+          },
           inputWrapper: { flex: 1 },
           input: {
             fontSize: FONTS.sizes.xxl,
@@ -410,6 +427,7 @@ const TokenInputBox = memo(
             )}
           </View>
 
+          <View style={styles.tokenCol}>
           <TouchableOpacity
             style={styles.tokenSelector}
             onPress={onTokenPress}
@@ -434,69 +452,18 @@ const TokenInputBox = memo(
               color={COLORS.textSecondary}
             />
           </TouchableOpacity>
+          {chain ? (
+            <View style={styles.chainTag}>
+              <Image source={{ uri: chain.icon }} style={styles.chainTagIcon} />
+              <Text style={styles.chainTagText}>on {chain.name.replace(" Chain", "")}</Text>
+            </View>
+          ) : null}
+          </View>
         </View>
       </View>
     );
   },
 );
-
-// ─── ChainButton ──────────────────────────────────────────────────────────────
-const ChainButton = memo(({ chain, onPress, theme }) => {
-  const { COLORS, SPACING, BORDER_RADIUS } = theme;
-  const [iconError, setIconError] = useState(false);
-
-  const styles = useMemo(
-    () =>
-      StyleSheet.create({
-        btn: {
-          flexDirection: "row",
-          alignItems: "center",
-          gap: SPACING.xs,
-          paddingVertical: SPACING.sm,
-          paddingHorizontal: SPACING.sm,
-          borderRadius: BORDER_RADIUS.md,
-          backgroundColor: COLORS.surface,
-          borderWidth: 1,
-          borderColor: COLORS.border,
-        },
-        icon: { width: 18, height: 18, borderRadius: 9 },
-        iconFallback: {
-          width: 18,
-          height: 18,
-          borderRadius: 9,
-          backgroundColor: COLORS.primaryMuted,
-          alignItems: "center",
-          justifyContent: "center",
-        },
-        iconFallbackText: {
-          fontSize: 9,
-          fontWeight: "800",
-          color: COLORS.primaryDark,
-        },
-      }),
-    [theme],
-  );
-
-  return (
-    <TouchableOpacity style={styles.btn} onPress={onPress} activeOpacity={0.75}>
-      {chain?.icon && !iconError ? (
-        <Image
-          source={{ uri: chain.icon }}
-          style={styles.icon}
-          onError={() => setIconError(true)}
-          fadeDuration={0}
-        />
-      ) : (
-        <View style={styles.iconFallback}>
-          <Text style={styles.iconFallbackText}>
-            {chain?.name?.charAt(0) ?? "?"}
-          </Text>
-        </View>
-      )}
-      <Ionicons name="chevron-down" size={11} color={COLORS.textSecondary} />
-    </TouchableOpacity>
-  );
-});
 
 // ─── PriceInfo ────────────────────────────────────────────────────────────────
 const PriceInfo = memo(
@@ -506,6 +473,8 @@ const PriceInfo = memo(
     priceImpact,
     slippage,
     impactColor,
+    provider,
+    routeInfo,
     theme,
   }) => {
     const { COLORS, SPACING, FONTS, BORDER_RADIUS } = theme;
@@ -575,9 +544,21 @@ const PriceInfo = memo(
                 color={COLORS.textTertiary}
               />
               <Text style={styles.text}>
-                Slippage: {(slippage * 100).toFixed(1)}% · 0x Protocol
+                Slippage: {(slippage * 100).toFixed(1)}% · {provider}
               </Text>
             </View>
+            {routeInfo && (
+              <View style={styles.row}>
+                <Ionicons name="time-outline" size={13} color={COLORS.textTertiary} />
+                <Text style={styles.text}>
+                  {routeInfo.eta != null
+                    ? `Arrives in ~${Math.max(1, Math.ceil(routeInfo.eta / 60))} min`
+                    : "Cross-chain"}
+                  {routeInfo.feesUsd != null ? ` · fees ≈ $${routeInfo.feesUsd.toFixed(2)}` : ""}
+                  {` · via ${routeInfo.via}`}
+                </Text>
+              </View>
+            )}
           </>
         )}
       </View>
@@ -590,10 +571,35 @@ export default function SwapScreen() {
   const theme = useTheme();
   const { COLORS, SPACING, FONTS, BORDER_RADIUS, SHADOWS } = theme;
 
-  const { activeChain, switchChainById } = useChain();
-  // ✅ Only need wallet.address from context — balance fetching goes direct to util
-  const { wallet } = useWallet();
-  const swap = useSwap();
+  const {
+    activeChain: contextChain,
+    switchChain,
+    networks,
+    solanaChain,
+  } = useChain();
+  // Only addresses from context — balance fetching goes direct to the utils
+  const { wallet, solanaAddress } = useWallet();
+
+  // The swap screen keeps its own chain so it can swap on Solana, which can't
+  // be the global (EVM-only) active chain. false = follow the active chain.
+  const [solanaSelected, setSolanaSelected] = useState(false);
+  const activeChain =
+    solanaSelected && solanaChain ? solanaChain : contextChain;
+  const isSolana = isSolanaChain(activeChain);
+  const swapNetworks = useMemo(
+    () => networks.filter((c) => !c.testnet || __DEV__),
+    [networks],
+  );
+
+  // What the user receives can be on another chain — that's a cross-chain
+  // swap, routed through LI.FI by useSwap. null = same chain as the sell side.
+  const [buyChainId, setBuyChainId] = useState(null);
+  const buyChain =
+    (buyChainId != null && swapNetworks.find((c) => c.id === buyChainId)) ||
+    activeChain;
+
+  const swap = useSwap(activeChain, buyChain);
+  const provider = swap.isCrossChain ? "LI.FI" : isSolana ? "Jupiter" : "0x Protocol";
   const navigation = useNavigation();
   const route = useRoute();
   const [trendingRefreshKey, setTrendingRefreshKey] = useState(0);
@@ -725,13 +731,16 @@ export default function SwapScreen() {
   );
 
   // ── Balance fetching ─────────────────────────────────────────────────────────
+  // Balance of `token` on `chain` (each side of the swap has its own chain)
   const fetchBalance = useCallback(
-    async (token, abortRef, setter) => {
+    async (token, chain, abortRef, setter) => {
       if (abortRef.current) abortRef.current.abort();
       const controller = new AbortController();
       abortRef.current = controller;
 
-      if (!token || !wallet?.address || !activeChain) {
+      const solana = isSolanaChain(chain);
+      const owner = solana ? solanaAddress : wallet?.address;
+      if (!token || !owner || !chain) {
         setter("0");
         return;
       }
@@ -739,17 +748,19 @@ export default function SwapScreen() {
       try {
         let formatted;
 
-        if (token.isNative) {
+        if (solana) {
+          // SOL, or an SPL token by mint (both cached 30s in SolanaService)
+          const result = token.isNative
+            ? await getSolBalance(owner)
+            : await getSplTokenBalance(owner, token.address);
+          formatted = result.formatted;
+        } else if (token.isNative) {
           // getNativeBalance(address, chain) → { formatted, wei, symbol, decimals }
-          const result = await getNativeBalance(wallet.address, activeChain);
+          const result = await getNativeBalance(owner, chain);
           formatted = result.formatted;
         } else {
           // getTokenBalance(tokenAddress, walletAddress, chain) → { formatted, wei, ... }
-          const result = await fetchERC20Balance(
-            token.address,
-            wallet.address,
-            activeChain,
-          );
+          const result = await fetchERC20Balance(token.address, owner, chain);
           formatted = result.formatted;
         }
 
@@ -763,19 +774,19 @@ export default function SwapScreen() {
         }
       }
     },
-    // Re-runs when wallet address or chain changes (covers account switch + chain switch)
-    [wallet?.address, activeChain],
+    // Re-runs on account switch (either address)
+    [wallet?.address, solanaAddress],
   );
 
   // Re-fetch sell balance when token changes or wallet/chain context changes
   useEffect(() => {
-    fetchBalance(swap.sellToken, sellAbortRef, setSellBalance);
-  }, [swap.sellToken?.address, fetchBalance]);
+    fetchBalance(swap.sellToken, activeChain, sellAbortRef, setSellBalance);
+  }, [swap.sellToken?.address, activeChain?.id, fetchBalance]);
 
   // Re-fetch buy balance when token changes or wallet/chain context changes
   useEffect(() => {
-    fetchBalance(swap.buyToken, buyAbortRef, setBuyBalance);
-  }, [swap.buyToken?.address, fetchBalance]);
+    fetchBalance(swap.buyToken, buyChain, buyAbortRef, setBuyBalance);
+  }, [swap.buyToken?.address, buyChain?.id, fetchBalance]);
 
   // ── Debounced price fetch ────────────────────────────────────────────────────
   const debouncedSellAmount = useDebounce(swap.sellAmount, 400);
@@ -783,20 +794,60 @@ export default function SwapScreen() {
     if (safeFloat(debouncedSellAmount) > 0 && swap.sellToken && swap.buyToken) {
       swap.fetchPrice?.();
     }
-  }, [debouncedSellAmount, swap.sellToken?.address, swap.buyToken?.address]);
+  }, [
+    debouncedSellAmount,
+    swap.sellToken?.address,
+    swap.buyToken?.address,
+    activeChain?.id,
+    buyChain?.id,
+  ]);
 
   // ── Preselected buy token (from a token's detail page) ───────────────────────
   const presetBuy = route.params?.presetBuy;
   useEffect(() => {
     if (!presetBuy) return;
     navigation.setParams({ presetBuy: undefined }); // apply once
+    // Buy it on its own chain, paying from the chain the user is already on —
+    // a cross-chain swap when they differ, so no manual network switch.
     swap.queueBuyToken(presetBuy);
-    if (presetBuy.chainId !== activeChain?.id) {
-      switchChainById(presetBuy.chainId).catch((err) =>
-        swap.setError(err?.message || "Couldn't switch network"),
-      );
-    }
+    setBuyChainId(presetBuy.chainId === activeChain?.id ? null : presetBuy.chainId);
   }, [presetBuy]);
+
+  // Solana stays local to this screen; an EVM pick also becomes the app's
+  // active chain, same as picking it anywhere else.
+  const handleSelectSwapChain = useCallback(
+    async (chain) => {
+      // Paying on the chain we were receiving on → back to a same-chain swap
+      if (chain.id === buyChainId) setBuyChainId(null);
+      if (isSolanaChain(chain)) {
+        setSolanaSelected(true);
+        return;
+      }
+      await switchChain(chain);
+      setSolanaSelected(false);
+    },
+    [switchChain, buyChainId],
+  );
+
+  const handleSelectBuyChain = useCallback(
+    (chain) => setBuyChainId(chain.id === activeChain?.id ? null : chain.id),
+    [activeChain?.id],
+  );
+
+  // Cross-chain flip swaps the chains as well as the tokens
+  const handleFlip = useCallback(async () => {
+    if (!swap.isCrossChain) return swap.flipTokens();
+    const prevSell = activeChain;
+    const prevBuy = buyChain;
+    swap.queueSellToken(swap.buyToken);
+    swap.queueBuyToken(swap.sellToken);
+    try {
+      await handleSelectSwapChain(prevBuy);
+      setBuyChainId(prevSell.id);
+    } catch (err) {
+      swap.setError(err?.message || "Couldn't switch network");
+    }
+  }, [swap, activeChain, buyChain, handleSelectSwapChain]);
 
   const handleTrendingPress = useCallback(
     (token) =>
@@ -820,36 +871,39 @@ export default function SwapScreen() {
     setTrendingRefreshKey((k) => k + 1);
     await swap.loadTokens();
     // Re-fetch both balances after a pull-to-refresh
-    fetchBalance(swap.sellToken, sellAbortRef, setSellBalance);
-    fetchBalance(swap.buyToken, buyAbortRef, setBuyBalance);
+    fetchBalance(swap.sellToken, activeChain, sellAbortRef, setSellBalance);
+    fetchBalance(swap.buyToken, buyChain, buyAbortRef, setBuyBalance);
     setRefreshing(false);
-  }, [swap.loadTokens, swap.sellToken, swap.buyToken, fetchBalance]);
+  }, [swap.loadTokens, swap.sellToken, swap.buyToken, activeChain, buyChain, fetchBalance]);
 
+  // The modal stays open on success (it shows the result — and for a
+  // cross-chain swap, tracks delivery); the amount is cleared when it closes.
+  const swapDoneRef = useRef(false);
   const handleSuccess = useCallback(() => {
-    setShowConfirm(false);
-    setCurrentQuote(null);
-    swap.setSellAmount("");
+    swapDoneRef.current = true;
     // Refresh both balances after a successful swap
-    fetchBalance(swap.sellToken, sellAbortRef, setSellBalance);
-    fetchBalance(swap.buyToken, buyAbortRef, setBuyBalance);
-  }, [swap.setSellAmount, swap.sellToken, swap.buyToken, fetchBalance]);
+    fetchBalance(swap.sellToken, activeChain, sellAbortRef, setSellBalance);
+    fetchBalance(swap.buyToken, buyChain, buyAbortRef, setBuyBalance);
+  }, [swap.setSellAmount, swap.sellToken, swap.buyToken, activeChain, buyChain, fetchBalance]);
 
   const handleSellTokenSelect = useCallback(
     (token) => {
       swap.setSellToken(token);
-      if (swap.buyToken?.address === token.address) swap.setBuyToken(null);
+      if (!swap.isCrossChain && swap.buyToken?.address === token.address)
+        swap.setBuyToken(null);
       setShowSellSelector(false);
     },
-    [swap.buyToken?.address],
+    [swap.buyToken?.address, swap.isCrossChain],
   );
 
   const handleBuyTokenSelect = useCallback(
     (token) => {
       swap.setBuyToken(token);
-      if (swap.sellToken?.address === token.address) swap.setSellToken(null);
+      if (!swap.isCrossChain && swap.sellToken?.address === token.address)
+        swap.setSellToken(null);
       setShowBuySelector(false);
     },
-    [swap.sellToken?.address],
+    [swap.sellToken?.address, swap.isCrossChain],
   );
 
   const handleMaxPress = useCallback(
@@ -869,6 +923,7 @@ export default function SwapScreen() {
   );
 
   const priceImpact = useMemo(() => swap.getPriceImpact(), [swap.priceInfo]);
+  const routeInfo = useMemo(() => swap.getRouteInfo(), [swap.priceInfo]);
 
   const sellUsdPrice = useMemo(
     () => swap.getSellUsdPrice(),
@@ -931,13 +986,16 @@ export default function SwapScreen() {
         <View style={styles.header}>
           <View>
             <Text style={styles.headerTitle}>Swap</Text>
-            <Text style={styles.headerSubtitle}>{activeChain?.name}</Text>
+            <Text style={styles.headerSubtitle}>
+              {swap.isCrossChain
+                ? `${activeChain?.name} → ${buyChain?.name}`
+                : activeChain?.name}
+            </Text>
           </View>
           <View style={styles.headerActions}>
-            <ChainButton
+            <ChainSelectorButton
               chain={activeChain}
               onPress={() => setShowChainSwitcher(true)}
-              theme={theme}
             />
             <TouchableOpacity
               style={[
@@ -977,6 +1035,7 @@ export default function SwapScreen() {
             balance={sellBalance}
             usdPrice={sellUsdPrice}
             onMaxPress={handleMaxPress}
+            chain={activeChain}
             theme={theme}
           />
 
@@ -984,7 +1043,7 @@ export default function SwapScreen() {
             <View style={styles.divider} />
             <TouchableOpacity
               style={styles.flipBtn}
-              onPress={swap.flipTokens}
+              onPress={handleFlip}
               activeOpacity={0.75}
             >
               <Ionicons name="swap-vertical" size={18} color={COLORS.primary} />
@@ -1002,6 +1061,7 @@ export default function SwapScreen() {
             isFetching={swap.isFetchingPrice}
             balance={buyBalance}
             usdPrice={buyUsdPrice}
+            chain={buyChain}
             theme={theme}
           />
         </View>
@@ -1014,6 +1074,8 @@ export default function SwapScreen() {
             priceImpact={priceImpact}
             slippage={swap.slippage}
             impactColor={impactColor}
+            provider={provider}
+            routeInfo={routeInfo}
             theme={theme}
           />
         )}
@@ -1068,7 +1130,7 @@ export default function SwapScreen() {
         {/* ── Powered By ── */}
         <View style={styles.poweredBy}>
           <Text style={styles.poweredByText}>Powered by </Text>
-          <Text style={styles.poweredByBrand}>0x Protocol</Text>
+          <Text style={styles.poweredByBrand}>{provider}</Text>
         </View>
 
         {/* ── Trending across chains ── */}
@@ -1087,7 +1149,14 @@ export default function SwapScreen() {
           tokens={swap.tokenList}
           selectedToken={swap.sellToken}
           excludeToken={swap.buyToken}
-          chainIcon={activeChain?.icon}
+          networks={swapNetworks}
+          selectedChainId={activeChain?.id}
+          onChainChange={(c) =>
+            handleSelectSwapChain(c).catch((err) =>
+              swap.setError(err?.message || "Couldn't switch network"),
+            )
+          }
+          loading={swap.loadingTokens}
           title="You Pay"
         />
       )}
@@ -1097,10 +1166,13 @@ export default function SwapScreen() {
           visible
           onClose={() => setShowBuySelector(false)}
           onSelect={handleBuyTokenSelect}
-          tokens={swap.tokenList}
+          tokens={swap.buyTokenList}
           selectedToken={swap.buyToken}
           excludeToken={swap.sellToken}
-          chainIcon={activeChain?.icon}
+          networks={swapNetworks}
+          selectedChainId={buyChain?.id}
+          onChainChange={handleSelectBuyChain}
+          loading={swap.isCrossChain ? swap.loadingBuyTokens : swap.loadingTokens}
           title="You Receive"
         />
       )}
@@ -1111,6 +1183,8 @@ export default function SwapScreen() {
           onClose={() => {
             setShowConfirm(false);
             setCurrentQuote(null);
+            if (swapDoneRef.current) swap.setSellAmount("");
+            swapDoneRef.current = false;
           }}
           onSuccess={handleSuccess}
           quote={currentQuote}
@@ -1118,12 +1192,17 @@ export default function SwapScreen() {
           buyToken={swap.buyToken}
           sellAmount={swap.sellAmount}
           buyAmountEstimate={swap.buyAmountEstimate}
+          chain={activeChain}
+          buyChain={buyChain}
         />
       )}
 
       <ChainSwitcher
         visible={showChainSwitcher}
         onClose={() => setShowChainSwitcher(false)}
+        chains={swapNetworks}
+        selectedChain={activeChain}
+        onSelect={handleSelectSwapChain}
       />
     </SafeAreaView>
   );

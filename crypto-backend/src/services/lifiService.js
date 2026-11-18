@@ -8,6 +8,7 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 const axios = require("axios");
+const { LIFI_SOLANA_CHAIN_ID } = require("../utils/solana");
 
 const LIFI_BASE_URL = "https://li.quest/v1";
 
@@ -115,7 +116,12 @@ const getConnections = async ({ fromChain, toChain, fromToken, toToken }) => {
 ========================================================= */
 const normalizeQuote = (lifiQuote) => {
   const tx = lifiQuote.transactionRequest || {};
-  const approvalAddress = lifiQuote.estimate?.approvalAddress || null;
+  const fromSolana = lifiQuote.action?.fromChainId === LIFI_SOLANA_CHAIN_ID;
+  // LI.FI still reports its EVM diamond as `approvalAddress` on Solana-origin
+  // routes — SPL tokens have no allowance step, so it must be ignored there.
+  const approvalAddress = fromSolana
+    ? null
+    : lifiQuote.estimate?.approvalAddress || null;
 
   return {
     source: "lifi",
@@ -133,14 +139,18 @@ const normalizeQuote = (lifiQuote) => {
     feeCostUsd: lifiQuote.estimate?.feeCosts?.[0]?.amountUSD ?? null,
     needsApproval: !!approvalAddress,
     allowanceTarget: approvalAddress,
-    transaction: {
-      to: tx.to,
-      data: tx.data,
-      value: tx.value || "0x0",
-      gasLimit: tx.gasLimit,
-      gasPrice: tx.gasPrice,
-      chainId: tx.chainId,
-    },
+    // Solana-origin: `data` is a base64 versioned transaction (fee payer =
+    // fromAddress) for the app to sign as-is. EVM-origin: a plain tx request.
+    transaction: fromSolana
+      ? { chainType: "solana", encoding: "base64", serialized: tx.data }
+      : {
+          to: tx.to,
+          data: tx.data,
+          value: tx.value || "0x0",
+          gasLimit: tx.gasLimit,
+          gasPrice: tx.gasPrice,
+          chainId: tx.chainId,
+        },
     // Needed later to poll GET /status
     statusParams: {
       bridge: lifiQuote.tool,

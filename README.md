@@ -73,9 +73,11 @@ way — see [ARCHITECTURE.md](ARCHITECTURE.md) for the reasoning behind each:
   in.** Both chains are new enough that no verified WETH-equivalent contract
   exists in the token lists yet — guessing an address here risks sending
   funds to the wrong contract, so it was left blank rather than guessed.
-- **Solana is defined in constants but not wired up.** `constants/nonEvmChain.js`
-  describes Solana as a chain but nothing in the signing/balance layer
-  supports a non-EVM keypair yet; it's inert until that's built.
+- **Sending SOL/SPL from the Send screen isn't wired up.** Solana is
+  integrated for balances, receiving, Jupiter swaps and LI.FI cross-chain
+  routes, and `utils/SolanaService.js` already has `sendSol`/`sendSplToken`,
+  but `SendScreen.js` is still EVM-only — so its Send buttons are hidden on
+  Solana assets until that screen gets a Solana path.
 - **A handful of legacy frontend files still exist alongside their
   replacements** (an old on-chain-router swap screen, a duplicate chain
   registry, an unreachable ZetaChain bridge screen). None of them run.

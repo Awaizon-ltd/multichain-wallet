@@ -1,7 +1,10 @@
-// Enhanced CoinGecko Service - Handles both native assets and ERC20 tokens
+// Enhanced CoinGecko Service - Handles native assets, ERC20 tokens and Solana SPL tokens
 
 import { withCache, TTL, invalidatePrices } from "../utils/cache/DataCache";
 import queue from "../utils/cache/RequestQueue";
+import cacheStore from "../utils/cache/CacheStore";
+import { apiGet } from "./apiClient";
+import { API_CONFIG } from "../config/api";
 
 const COINGECKO_API_BASE = "https://api.coingecko.com/api/v3";
 
@@ -17,11 +20,12 @@ const COIN_ID_MAP = {
   AVAX: "avalanche-2",
   OP: "optimism",
   ARB: "arbitrum",
+  SOL: "solana",
   // Arc's native gas asset is USDC itself — reuse the same CoinGecko id.
   USDC: "usd-coin",
 };
 
-// Map chain IDs to CoinGecko platform IDs (for ERC20 tokens)
+// Map chain IDs to CoinGecko platform IDs (for ERC20 / SPL tokens)
 const PLATFORM_ID_MAP = {
   1: "ethereum", // Ethereum
   56: "binance-smart-chain", // BSC
@@ -30,6 +34,7 @@ const PLATFORM_ID_MAP = {
   10: "optimistic-ethereum", // Optimism
   43114: "avalanche", // Avalanche
   8453: "base", // Base
+  SOLANA: "solana", // Solana (non-EVM chains use their config `key`)
   // NOTE: Arc (5042) and Robinhood Chain (4663) aren't indexed as CoinGecko
   // "platforms" yet — contract-address price lookups fall back to the
   // symbol-based strategy in getTokenPrice() until CoinGecko adds them.
@@ -84,14 +89,38 @@ const TOKEN_ID_MAP = {
   WAVAX: "wrapped-avax",
 };
 
+const SOLANA_PLATFORM_ID = "solana";
+
+// Base58 (no 0, O, I, l), 32–44 chars: the shape of a Solana address / mint
+const SOLANA_ADDRESS_RE = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/;
+
+/**
+ * Is this value a contract/mint address for the given platform?
+ */
+const isContractAddress = (value, platformId) => {
+  if (typeof value !== "string") return false;
+  if (platformId === SOLANA_PLATFORM_ID) return SOLANA_ADDRESS_RE.test(value);
+  return value.startsWith("0x") && value.length === 42;
+};
+
+/**
+ * Normalize a contract address for cache keys.
+ * EVM addresses are case-insensitive (lowercased). Solana mints are
+ * case-sensitive base58, so lowercasing would corrupt them.
+ */
+const normalizeContract = (address, platformId) =>
+  platformId === SOLANA_PLATFORM_ID ? address : address.toLowerCase();
+
 /** Clear all CoinGecko price data from the cache */
 export const clearCache = () => invalidatePrices();
 
 /**
- * Get CoinGecko platform ID from chain ID
+ * Get CoinGecko platform ID from chain ID.
+ * Accepts a numeric EVM chain id or a non-EVM chain key such as "SOLANA".
  */
 export const getPlatformId = (chainId) => {
-  return PLATFORM_ID_MAP[chainId] || null;
+  const key = typeof chainId === "string" ? chainId.toUpperCase() : chainId;
+  return PLATFORM_ID_MAP[key] || null;
 };
 
 /**
@@ -103,34 +132,43 @@ export const getCoinIdFromSymbol = (symbol) => {
 };
 
 /**
- * Get token price and data by contract address (for ERC20 tokens).
+ * Get token price and data by contract address (ERC20) or mint (SPL).
  * Cached 60s, persisted to AsyncStorage.
  */
 export const getTokenPriceByContract = async (contractAddress, platformId) => {
-  const cacheKey = `cgtoken:${platformId}:${contractAddress.toLowerCase()}`;
+  const cacheKey = `cgtoken:${platformId}:${normalizeContract(contractAddress, platformId)}`;
   try {
-    return await withCache(cacheKey, TTL.PRICE_TOKEN, async () => {
-      const response = await fetch(
-        `${COINGECKO_API_BASE}/simple/token_price/${platformId}?contract_addresses=${contractAddress}&vs_currencies=usd&include_24hr_change=true&include_24hr_vol=true&include_market_cap=true`,
-      );
-      if (!response.ok) return null;
-      const data = await response.json();
-      const tokenData = data[contractAddress.toLowerCase()];
-      if (!tokenData) return null;
-      return {
-        usd: tokenData.usd,
-        usd_24h_change: tokenData.usd_24h_change,
-        usd_24h_vol: tokenData.usd_24h_vol,
-        usd_market_cap: tokenData.usd_market_cap,
-      };
-    }, { persist: true });
+    return await withCache(
+      cacheKey,
+      TTL.PRICE_TOKEN,
+      async () => {
+        const response = await fetch(
+          `${COINGECKO_API_BASE}/simple/token_price/${platformId}?contract_addresses=${contractAddress}&vs_currencies=usd&include_24hr_change=true&include_24hr_vol=true&include_market_cap=true`,
+        );
+        if (!response.ok) return null;
+        const data = await response.json();
+        // Exact match first (Solana), then lowercase (EVM responses are lowercased)
+        const tokenData =
+          data[contractAddress] || data[contractAddress.toLowerCase()];
+        if (!tokenData) return null;
+        return {
+          usd: tokenData.usd,
+          usd_24h_change: tokenData.usd_24h_change,
+          usd_24h_vol: tokenData.usd_24h_vol,
+          usd_market_cap: tokenData.usd_market_cap,
+        };
+      },
+      { persist: true },
+    );
   } catch {
     return null;
   }
 };
 
 /**
- * Get token price by symbol (tries multiple strategies)
+ * Get token price by symbol (tries multiple strategies).
+ * For SPL tokens pass the mint address (with chainId "SOLANA") rather than
+ * the symbol: symbols are trivially spoofed on Solana, mints are not.
  */
 export const getTokenPrice = async (symbolOrAddress, chainId) => {
   try {
@@ -141,10 +179,10 @@ export const getTokenPrice = async (symbolOrAddress, chainId) => {
       return prices[coinId] || null;
     }
 
-    // Strategy 2: contract address lookup
-    if (symbolOrAddress.startsWith("0x") && symbolOrAddress.length === 42) {
-      const platformId = getPlatformId(chainId);
-      if (platformId) return getTokenPriceByContract(symbolOrAddress, platformId);
+    // Strategy 2: contract address / mint lookup
+    const platformId = getPlatformId(chainId);
+    if (platformId && isContractAddress(symbolOrAddress, platformId)) {
+      return getTokenPriceByContract(symbolOrAddress, platformId);
     }
 
     // Strategy 3: search
@@ -171,15 +209,22 @@ export const getCoinPrices = async (coinIds) => {
   const ids = sorted.join(",");
   const cacheKey = `cgprices:${ids}`;
 
-  return queue.execute(cacheKey, () =>
-    withCache(cacheKey, TTL.PRICE_BATCH, async () => {
-      const response = await fetch(
-        `${COINGECKO_API_BASE}/simple/price?ids=${ids}&vs_currencies=usd&include_24hr_change=true&include_24hr_vol=true&include_market_cap=true`,
-      );
-      if (!response.ok) throw new Error(`CoinGecko ${response.status}`);
-      return response.json();
-    }, { persist: true }),
-  ).catch(() => ({}));
+  return queue
+    .execute(cacheKey, () =>
+      withCache(
+        cacheKey,
+        TTL.PRICE_BATCH,
+        async () => {
+          const response = await fetch(
+            `${COINGECKO_API_BASE}/simple/price?ids=${ids}&vs_currencies=usd&include_24hr_change=true&include_24hr_vol=true&include_market_cap=true`,
+          );
+          if (!response.ok) throw new Error(`CoinGecko ${response.status}`);
+          return response.json();
+        },
+        { persist: true },
+      ),
+    )
+    .catch(() => ({}));
 };
 
 /**
@@ -199,9 +244,31 @@ export const getCoinPriceBySymbol = async (symbol) => {
 /**
  * Get prices for all supported native tokens
  */
+// Last native prices we successfully loaded (persisted), used when both
+// sources fail so balances keep a value instead of dropping to $0.00.
+const LAST_NATIVE_PRICES_KEY = "native-prices:last-good";
+const hasPrices = (p) => !!p && Object.values(p).some((v) => typeof v?.usd === "number");
+
 export const getAllNativePrices = async () => {
   const coinIds = Object.values(COIN_ID_MAP);
-  const prices = await getCoinPrices(coinIds);
+
+  // 1) Our backend: one cached CoinGecko call shared by every wallet.
+  let prices = null;
+  try {
+    const json = await apiGet(API_CONFIG.ENDPOINTS.MARKET_NATIVE_PRICES, { ttl: TTL.PRICE_BATCH });
+    prices = json?.data ?? null;
+  } catch {
+    prices = null;
+  }
+  // 2) CoinGecko directly (rate-limited per device, so only as a fallback).
+  if (!hasPrices(prices)) prices = await getCoinPrices(coinIds);
+  // 3) The last prices that loaded.
+  await cacheStore.hydrate();
+  if (hasPrices(prices)) {
+    cacheStore.set(LAST_NATIVE_PRICES_KEY, prices, { persist: true });
+  } else {
+    prices = cacheStore.get(LAST_NATIVE_PRICES_KEY)?.value ?? {};
+  }
 
   // Convert back to symbol-based object
   const pricesBySymbol = {};
@@ -225,7 +292,11 @@ export const searchToken = async (query) => {
     if (!response.ok) return null;
     const data = await response.json();
     if (data.coins?.length > 0) {
-      return { id: data.coins[0].id, symbol: data.coins[0].symbol, name: data.coins[0].name };
+      return {
+        id: data.coins[0].id,
+        symbol: data.coins[0].symbol,
+        name: data.coins[0].name,
+      };
     }
     return null;
   } catch {
@@ -245,8 +316,12 @@ export const getTokenLogo = async (symbolOrAddress, platformId = null) => {
       return details?.image?.large || details?.image?.small || null;
     }
 
-    // Try by contract address
-    if (symbolOrAddress.startsWith("0x") && platformId) {
+    // Try by contract address / mint
+    if (
+      platformId &&
+      (symbolOrAddress.startsWith("0x") ||
+        isContractAddress(symbolOrAddress, platformId))
+    ) {
       const response = await fetch(
         `${COINGECKO_API_BASE}/coins/${platformId}/contract/${symbolOrAddress}`,
       );
@@ -277,13 +352,18 @@ export const getTokenLogo = async (symbolOrAddress, platformId = null) => {
 export const getCoinDetails = async (coinId) => {
   const cacheKey = `cgdetails:${coinId}`;
   try {
-    return await withCache(cacheKey, DETAILS_TTL, async () => {
-      const response = await fetch(
-        `${COINGECKO_API_BASE}/coins/${coinId}?localization=false&tickers=false&community_data=false&developer_data=false`,
-      );
-      if (!response.ok) throw new Error(`CoinGecko ${response.status}`);
-      return response.json();
-    }, { persist: true });
+    return await withCache(
+      cacheKey,
+      DETAILS_TTL,
+      async () => {
+        const response = await fetch(
+          `${COINGECKO_API_BASE}/coins/${coinId}?localization=false&tickers=false&community_data=false&developer_data=false`,
+        );
+        if (!response.ok) throw new Error(`CoinGecko ${response.status}`);
+        return response.json();
+      },
+      { persist: true },
+    );
   } catch {
     return null;
   }
@@ -328,7 +408,7 @@ export const formatPriceChange = (change) => {
 };
 
 /**
- * Get token info by contract address (detailed)
+ * Get token info by contract address / mint (detailed)
  */
 export const getTokenInfoByContract = async (contractAddress, platformId) => {
   try {

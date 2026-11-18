@@ -12,6 +12,7 @@ import {
 } from "react-native";
 import { Ionicons, MaterialCommunityIcons } from "@expo/vector-icons";
 import { useTheme } from "../../contexts/ThemeContext";
+import { ChainSelectorButton } from "../wallet/ChainSwitcher";
 
 // ─── Static data ──────────────────────────────────────────────────────────────
 
@@ -520,37 +521,7 @@ const BrowserHome = ({
       >
         <View style={hd.titleRow}>
           <Text style={[hd.title, { color: COLORS.text }]}>Discover</Text>
-          <TouchableOpacity
-            onPress={onChainPress}
-            activeOpacity={0.8}
-            style={[
-              hd.chainPill,
-              { backgroundColor: COLORS.card, borderColor: COLORS.border },
-            ]}
-          >
-            {activeChain?.icon ? (
-              <Image
-                source={{ uri: activeChain.icon, cache: "force-cache" }}
-                style={hd.chainIcon}
-                fadeDuration={0}
-              />
-            ) : (
-              <View
-                style={[
-                  hd.chainIcon,
-                  { backgroundColor: COLORS.primaryMuted, borderRadius: 8 },
-                ]}
-              />
-            )}
-            <Text style={[hd.chainName, { color: COLORS.text }]}>
-              {activeChain?.name}
-            </Text>
-            <Ionicons
-              name="chevron-down"
-              size={11}
-              color={COLORS.textSecondary}
-            />
-          </TouchableOpacity>
+          <ChainSelectorButton chain={activeChain} onPress={onChainPress} />
         </View>
 
         <View

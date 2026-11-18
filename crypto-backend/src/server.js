@@ -20,6 +20,7 @@ app.use(express.urlencoded({ extended: true }));
 // ─── Routes ───────────────────────────────────────────────────────────────────
 app.use("/api/tokens", require("./routes/tokenRoutes"));
 app.use("/api/wallets", require("./routes/walletRoutes"));
+app.use("/api/identity", require("./routes/identityRoutes"));
 app.use("/api/swap", require("./routes/swapRoutes"));
 app.use("/api/swap", require("./routes/swapTrackingRoutes"));
 app.use("/api/bridge", require("./routes/bridgeRoutes"));

@@ -3,33 +3,25 @@ import { ScrollView, StyleSheet } from "react-native";
 import { useWallet } from "../../contexts/WalletContext";
 import { useTheme } from "../../contexts/ThemeContext";
 import { SettingsSection, MenuItem } from "../../components/settings/SettingsMenuItem";
-import { APP_CONFIG } from "../../constants/Config";
+import { getIdentityByAddress } from "../../services/identity";
 
 const WalletSettingsScreen = ({ navigation }) => {
-  const { wallet } = useWallet();
+  const { wallet, address } = useWallet();
   const { COLORS, SPACING } = useTheme();
   const [bindingStatus, setBindingStatus] = useState(null);
   const [boundUsername, setBoundUsername] = useState(null);
 
+  // Identity of the ACTIVE account (each account links separately)
   const checkBindingStatus = useCallback(async () => {
-    const walletAddress = wallet?.address;
-    if (!walletAddress || !APP_CONFIG.API_URL) return;
+    if (!address) return;
     try {
-      const res = await fetch(
-        `${APP_CONFIG.API_URL}/api/wallets/resolve?email_or_username=${encodeURIComponent(walletAddress)}`,
-      );
-      if (res.ok) {
-        const json = await res.json();
-        setBindingStatus("bound");
-        setBoundUsername(json.data?.username || null);
-      } else {
-        setBindingStatus("unbound");
-        setBoundUsername(null);
-      }
+      const found = await getIdentityByAddress(address);
+      setBindingStatus(found ? "bound" : "unbound");
+      setBoundUsername(found?.username ?? null);
     } catch {
-      setBindingStatus("unbound");
+      setBindingStatus(null); // unknown (offline) — don't claim either way
     }
-  }, [wallet?.address]);
+  }, [address]);
 
   useEffect(() => {
     checkBindingStatus();
@@ -39,8 +31,8 @@ const WalletSettingsScreen = ({ navigation }) => {
 
   const bindingSubtitle =
     bindingStatus === "bound" && boundUsername
-      ? `Bound to @${boundUsername}  ✔`
-      : "Link your username & email to this wallet";
+      ? `@${boundUsername} · verified`
+      : "Claim a @username for this account";
 
   const styles = StyleSheet.create({
     container: { flex: 1, backgroundColor: COLORS.background },
@@ -65,11 +57,18 @@ const WalletSettingsScreen = ({ navigation }) => {
           onPress={() => navigation.navigate("RecoveryPhrase")}
         />
         <MenuItem
+          iconName="cloud-upload-outline"
+          iconColor={COLORS.primary}
+          title="Cloud Backup"
+          subtitle="Encrypted backup to your Google Drive"
+          onPress={() => navigation.navigate("CloudBackup")}
+        />
+        <MenuItem
           iconName={
             bindingStatus === "bound" ? "checkmark-circle-outline" : "card-outline"
           }
           iconColor={bindingStatus === "bound" ? COLORS.success : COLORS.primary}
-          title="Bind Wallet Identity"
+          title="Wallet Identity"
           subtitle={bindingSubtitle}
           onPress={() => navigation.navigate("BindWallet")}
           isLast

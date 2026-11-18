@@ -7,537 +7,661 @@ import {
   Dimensions,
   TouchableOpacity,
   Animated,
+  Easing,
   Image,
   SafeAreaView,
+  ScrollView,
   StatusBar,
+  ActivityIndicator,
+  Pressable,
 } from "react-native";
 import { VideoView, useVideoPlayer } from "expo-video";
-import { BlurView } from "expo-blur";
 import { Ionicons } from "@expo/vector-icons";
 import { useTheme } from "../../contexts/ThemeContext";
+import { useGoogleAuth } from "../../services/GoogleService";
+import {
+  restoreMnemonic,
+  setGoogleSession,
+} from "../../services/cloudBackup";
 
-const { width, height } = Dimensions.get("window");
+const { width } = Dimensions.get("window");
+const CIRCLE = Math.min(width * 0.42, 170);
 
-// ─── Pill stat item ───────────────────────────────────────────────────────────
-const StatPill = ({ label, COLORS }) => (
-  <View style={[pill.wrap, { borderColor: "rgba(247,200,74,0.22)" }]}>
-    <Text style={[pill.text, { color: COLORS.textSecondary }]}>{label}</Text>
-  </View>
-);
-const pill = StyleSheet.create({
-  wrap: {
-    paddingVertical: 5,
-    paddingHorizontal: 12,
-    borderRadius: 999,
+// Carousel geometry
+const SIDE = 20;
+const GAP = 12;
+const CARD_W = width - SIDE * 2 - 24; // leaves a peek of the next card
+const INTERVAL = CARD_W + GAP;
+
+// ─── Feature highlights ───────────────────────────────────────────────────────
+const FEATURES = [
+  {
+    icon: "sparkles",
+    title: "AI assistant",
+    text: "Ask in plain language. Get answers, plans and actions for your portfolio.",
+  },
+  {
+    icon: "hardware-chip",
+    title: "Agentic wallet",
+    text: "Let agents trade, rebalance and manage positions for you, within limits you set.",
+  },
+  {
+    icon: "swap-horizontal",
+    title: "Advanced DEX",
+    text: "Pro-grade trading tools and deep liquidity, built right into your wallet.",
+  },
+  {
+    icon: "pricetag",
+    title: "Low swap fees",
+    text: "Keep more of every trade with some of the lowest swap fees around.",
+  },
+  {
+    icon: "repeat",
+    title: "Cross-chain",
+    text: "Move value between networks in a few taps, with no manual bridging.",
+  },
+  {
+    icon: "layers",
+    title: "Top chains",
+    text: "All the major networks supported, side by side in one portfolio.",
+  },
+  {
+    icon: "trending-up",
+    title: "Stocks & RWA",
+    text: "Trade tokenized stocks and real-world assets, onchain, around the clock.",
+  },
+  {
+    icon: "globe",
+    title: "Onchain economy",
+    text: "Explore apps, assets and yield across the onchain economy.",
+  },
+];
+
+// ─── Feature card ─────────────────────────────────────────────────────────────
+const FeatureCard = ({ item, index, scrollX, COLORS }) => {
+  const range = [
+    (index - 1) * INTERVAL,
+    index * INTERVAL,
+    (index + 1) * INTERVAL,
+  ];
+  const scale = scrollX.interpolate({
+    inputRange: range,
+    outputRange: [0.93, 1, 0.93],
+    extrapolate: "clamp",
+  });
+  const opacity = scrollX.interpolate({
+    inputRange: range,
+    outputRange: [0.55, 1, 0.55],
+    extrapolate: "clamp",
+  });
+
+  return (
+    <Animated.View
+      style={[
+        c.card,
+        {
+          backgroundColor: COLORS.surface,
+          borderColor: COLORS.primary + "30",
+          opacity,
+          transform: [{ scale }],
+        },
+      ]}
+    >
+      {/* Large watermark icon */}
+      <Ionicons
+        name={item.icon}
+        size={150}
+        color={COLORS.primary}
+        style={c.watermark}
+      />
+
+      <View style={[c.iconWrap, { backgroundColor: COLORS.primary }]}>
+        <Ionicons name={item.icon} size={30} color="#000" />
+      </View>
+
+      <View>
+        <Text style={[c.title, { color: COLORS.text }]}>{item.title}</Text>
+        <Text style={[c.text, { color: COLORS.textSecondary }]}>
+          {item.text}
+        </Text>
+      </View>
+    </Animated.View>
+  );
+};
+
+const c = StyleSheet.create({
+  card: {
+    width: CARD_W,
+    height: 196,
+    borderRadius: 28,
     borderWidth: 1,
+    padding: 22,
+    justifyContent: "space-between",
+    overflow: "hidden",
   },
-  text: {
-    fontSize: 11,
-    fontWeight: "600",
-    letterSpacing: 0.6,
-    textTransform: "uppercase",
+  watermark: {
+    position: "absolute",
+    right: -22,
+    top: -18,
+    opacity: 0.07,
   },
+  iconWrap: {
+    width: 60,
+    height: 60,
+    borderRadius: 30,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  title: { fontSize: 22, fontWeight: "900", letterSpacing: -0.4 },
+  text: { fontSize: 14, lineHeight: 20, marginTop: 4, maxWidth: "92%" },
 });
 
 // ─── Main ─────────────────────────────────────────────────────────────────────
 const WelcomeScreen = ({ navigation }) => {
   const { COLORS, isDark } = useTheme();
+  const [notice, setNotice] = useState("");
 
-  // ── Video ─────────────────────────────────────────────────────────────────
+  // ── Video (shown in the circle) ──
   const player = useVideoPlayer(require("../../assets/video.mp4"), (p) => {
     p.loop = true;
     p.muted = true;
     p.play();
   });
 
-  // ── Animation refs ────────────────────────────────────────────────────────
-  const overlayFade = useRef(new Animated.Value(0)).current; // dark overlay
-  const logoFade = useRef(new Animated.Value(0)).current;
-  const logoSlide = useRef(new Animated.Value(-20)).current;
-  const panelSlide = useRef(new Animated.Value(120)).current; // bottom panel
-  const panelFade = useRef(new Animated.Value(0)).current;
-  const headlineFade = useRef(new Animated.Value(0)).current;
-  const headlineSlide = useRef(new Animated.Value(18)).current;
-  const subFade = useRef(new Animated.Value(0)).current;
-  const btnFade = useRef(new Animated.Value(0)).current;
-  const btnScale = useRef(new Animated.Value(0.94)).current;
-  const scanAnim = useRef(new Animated.Value(0)).current; // amber scan line
-  const glowPulse = useRef(new Animated.Value(0.55)).current;
+  // ── Animations ──
+  const circleScale = useRef(new Animated.Value(0.85)).current;
+  const circleFade = useRef(new Animated.Value(0)).current;
+  const bodyFade = useRef(new Animated.Value(0)).current;
+  const bodySlide = useRef(new Animated.Value(28)).current;
+  const pulse = useRef(new Animated.Value(0)).current;
 
-  // ── Mounted state to handle scan loop ────────────────────────────────────
-  const mounted = useRef(true);
-  useEffect(() => {
-    return () => {
-      mounted.current = false;
-    };
-  }, []);
+  // ── Carousel ──
+  const scrollX = useRef(new Animated.Value(0)).current;
+  const carouselRef = useRef(null);
+  const indexRef = useRef(0);
+  const pausedUntil = useRef(0);
 
   useEffect(() => {
-    // Staggered entry
     Animated.sequence([
-      // 1. Overlay dims the video slightly
-      Animated.timing(overlayFade, {
-        toValue: 1,
-        duration: 700,
-        useNativeDriver: true,
-      }),
-      // 2. Logo slides in from top
       Animated.parallel([
-        Animated.timing(logoFade, {
+        Animated.timing(circleFade, {
           toValue: 1,
           duration: 500,
           useNativeDriver: true,
         }),
-        Animated.timing(logoSlide, {
-          toValue: 0,
-          duration: 460,
+        Animated.spring(circleScale, {
+          toValue: 1,
+          friction: 6,
           useNativeDriver: true,
         }),
       ]),
-      // 3. Panel rises
       Animated.parallel([
-        Animated.timing(panelSlide, {
+        Animated.timing(bodyFade, {
+          toValue: 1,
+          duration: 450,
+          useNativeDriver: true,
+        }),
+        Animated.timing(bodySlide, {
           toValue: 0,
-          duration: 540,
-          useNativeDriver: true,
-        }),
-        Animated.timing(panelFade, {
-          toValue: 1,
-          duration: 500,
-          useNativeDriver: true,
-        }),
-      ]),
-      // 4. Headline appears
-      Animated.parallel([
-        Animated.timing(headlineFade, {
-          toValue: 1,
-          duration: 400,
-          useNativeDriver: true,
-        }),
-        Animated.timing(headlineSlide, {
-          toValue: 0,
-          duration: 380,
-          useNativeDriver: true,
-        }),
-      ]),
-      // 5. Sub + button
-      Animated.parallel([
-        Animated.timing(subFade, {
-          toValue: 1,
-          duration: 360,
-          useNativeDriver: true,
-        }),
-        Animated.timing(btnFade, {
-          toValue: 1,
-          duration: 360,
-          useNativeDriver: true,
-        }),
-        Animated.timing(btnScale, {
-          toValue: 1,
-          duration: 400,
+          duration: 420,
+          easing: Easing.out(Easing.cubic),
           useNativeDriver: true,
         }),
       ]),
     ]).start();
 
-    // Ambient amber glow pulse on the edge line
-    Animated.loop(
+    const loop = Animated.loop(
       Animated.sequence([
-        Animated.timing(glowPulse, {
+        Animated.timing(pulse, {
           toValue: 1,
-          duration: 2200,
+          duration: 2400,
+          easing: Easing.inOut(Easing.sin),
           useNativeDriver: true,
         }),
-        Animated.timing(glowPulse, {
-          toValue: 0.45,
-          duration: 2200,
+        Animated.timing(pulse, {
+          toValue: 0,
+          duration: 2400,
+          easing: Easing.inOut(Easing.sin),
           useNativeDriver: true,
         }),
       ]),
-    ).start();
+    );
+    loop.start();
 
-    // Horizontal scan line that sweeps across the panel periodically
-    const runScan = () => {
-      if (!mounted.current) return;
-      scanAnim.setValue(0);
-      Animated.timing(scanAnim, {
-        toValue: 1,
-        duration: 1800,
-        useNativeDriver: true,
-      }).start(() => {
-        if (mounted.current) setTimeout(runScan, 4000);
-      });
+    // Track current card from scroll position
+    const id = scrollX.addListener(({ value }) => {
+      indexRef.current = Math.round(value / INTERVAL);
+    });
+
+    // Auto-advance, paused briefly after the user touches the carousel
+    const timer = setInterval(() => {
+      if (Date.now() < pausedUntil.current) return;
+      const next = (indexRef.current + 1) % FEATURES.length;
+      carouselRef.current?.scrollTo({ x: next * INTERVAL, animated: true });
+    }, 3800);
+
+    return () => {
+      loop.stop();
+      scrollX.removeListener(id);
+      clearInterval(timer);
     };
-    setTimeout(runScan, 2600);
   }, []);
 
-  const scanTranslateX = scanAnim.interpolate({
+  // ── Keep the video playing (resume if it pauses or screen regains focus) ──
+  useEffect(() => {
+    let active = true;
+    const playingSub = player.addListener("playingChange", ({ isPlaying }) => {
+      if (!isPlaying && active) player.play();
+    });
+    const unsubFocus = navigation.addListener("focus", () => {
+      active = true;
+      player.play();
+    });
+    const unsubBlur = navigation.addListener("blur", () => {
+      active = false;
+      player.pause();
+    });
+    return () => {
+      active = false;
+      playingSub.remove();
+      unsubFocus();
+      unsubBlur();
+    };
+  }, [player, navigation]);
+
+  const haloScale = pulse.interpolate({
     inputRange: [0, 1],
-    outputRange: [-width, width * 1.2],
+    outputRange: [1, 1.12],
+  });
+  const haloOpacity = pulse.interpolate({
+    inputRange: [0, 1],
+    outputRange: [0.9, 0.35],
   });
 
-  const glowOpacity = glowPulse;
+  // ── Google sign-up / sign-in ──
+  // Signs in to Firebase; with Drive allowed, an existing Rizon backup is
+  // decrypted and the wallet restored, otherwise a new wallet is created and
+  // backed up. Either way the user finishes in Setup (name + PIN).
+  const [driveBackup, setDriveBackup] = useState(true);
+  const [googleStage, setGoogleStage] = useState(null); // null | "signin" | "restore"
+  const google = useGoogleAuth({ withDrive: driveBackup });
+
+  const flash = (msg) => {
+    setNotice(msg);
+    setTimeout(() => setNotice(""), 4000);
+  };
+
+  const handleGoogle = async () => {
+    if (googleStage || !google.ready) return;
+    try {
+      setGoogleStage("signin");
+      const session = await google.signIn();
+      if (!session) return; // cancelled
+
+      let restored = null;
+      if (session.driveGranted) {
+        setGoogleStage("restore");
+        try {
+          restored = await restoreMnemonic(session);
+        } catch (err) {
+          // A backup exists but can't be used — say so, and don't silently
+          // create a second wallet over the top of it.
+          flash(err.message);
+          return;
+        }
+      } else if (driveBackup) {
+        flash("Drive access wasn't granted — your wallet won't be backed up.");
+      }
+
+      setGoogleSession({ ...session, restored });
+      navigation.navigate("Setup", { google: true });
+    } catch (err) {
+      flash(err?.message || "Google sign-in failed. Please try again.");
+    } finally {
+      setGoogleStage(null);
+    }
+  };
+
+  const styles = getStyles(COLORS);
 
   return (
-    <View style={s.root}>
+    <SafeAreaView style={styles.safe}>
       <StatusBar
         translucent
         backgroundColor="transparent"
-        barStyle="light-content"
+        barStyle={isDark ? "light-content" : "dark-content"}
       />
 
-      {/* ── Full-bleed video ── */}
-      <VideoView
-        player={player}
-        style={s.video}
-        contentFit="cover"
-        nativeControls={false}
-      />
+      <ScrollView
+        contentContainerStyle={styles.scroll}
+        showsVerticalScrollIndicator={false}
+      >
+        {/* ── Masthead ── */}
+        <Text style={styles.appName}></Text>
 
-      {/* ── Ambient dark gradient overlay (bottom-weighted) ── */}
-      <Animated.View style={[s.overlay, { opacity: overlayFade }]}>
-        {/* Top: very thin scrim so logo reads */}
-        <View style={s.overlayTop} />
-        {/* Bottom: heavy black to anchor the panel */}
-        <View style={s.overlayBottom} />
-      </Animated.View>
-
-      {/* ── Safe area content ── */}
-      <SafeAreaView style={s.safe}>
-        {/* ── Logo / masthead — top left ── */}
+        {/* ── Video circle ── */}
         <Animated.View
           style={[
-            s.masthead,
-            { opacity: logoFade, transform: [{ translateY: logoSlide }] },
+            styles.circleStage,
+            { opacity: circleFade, transform: [{ scale: circleScale }] },
           ]}
         >
-          <View style={[s.logoMark, { borderColor: "rgba(247,200,74,0.35)" }]}>
+          <Animated.View
+            style={[
+              styles.halo,
+              { opacity: haloOpacity, transform: [{ scale: haloScale }] },
+            ]}
+          />
+          <View style={styles.circleRing}>
+            <View style={styles.circleClip}>
+              <VideoView
+                player={player}
+                style={styles.video}
+                contentFit="cover"
+                nativeControls={false}
+                surfaceType="textureView"
+                allowsPictureInPicture={false}
+              />
+            </View>
+          </View>
+
+          <View style={styles.logoBadge}>
             <Image
               source={require("../../assets/icon.png")}
-              style={s.logoImg}
+              style={styles.logoImg}
               resizeMode="contain"
             />
           </View>
-          <Text style={s.appName}>Awarizon</Text>
         </Animated.View>
 
-        {/* ── Spacer pushes panel to bottom ── */}
-        <View style={{ flex: 1 }} />
-
-        {/* ── Bottom vault panel ── */}
+        {/* ── Body ── */}
         <Animated.View
-          style={[
-            s.panel,
-            {
-              opacity: panelFade,
-              transform: [{ translateY: panelSlide }],
-            },
-          ]}
+          style={{ opacity: bodyFade, transform: [{ translateY: bodySlide }] }}
         >
-          {/* Glowing amber top edge — THE signature element */}
-          <Animated.View style={[s.edgeLine, { opacity: glowOpacity }]} />
-          {/* Solid 1 px line always visible */}
-          <View style={s.edgeLineSolid} />
+          <Text style={styles.headline}>
+            The smart wallet for the onchain economy.
+          </Text>
+          <Text style={styles.sub}>
+            Trade, swap and bridge across chains, with AI agents working for
+            you.
+          </Text>
 
-          {/* Scan shimmer that crosses the top edge */}
-          <Animated.View
-            style={[
-              s.scanLine,
-              { transform: [{ translateX: scanTranslateX }] },
-            ]}
-          />
-
-          <BlurView
-            intensity={isDark ? 28 : 22}
-            tint="dark"
-            style={s.panelBlur}
+          {/* ── Feature carousel ── */}
+          <Animated.ScrollView
+            ref={carouselRef}
+            horizontal
+            showsHorizontalScrollIndicator={false}
+            snapToInterval={INTERVAL}
+            snapToAlignment="start"
+            decelerationRate="fast"
+            contentContainerStyle={styles.carousel}
+            scrollEventThrottle={16}
+            onScroll={Animated.event(
+              [{ nativeEvent: { contentOffset: { x: scrollX } } }],
+              { useNativeDriver: true },
+            )}
+            onScrollBeginDrag={() => {
+              pausedUntil.current = Date.now() + 8000;
+            }}
           >
-            <View
-              style={[s.panelInner, { backgroundColor: "rgba(10,8,4,0.82)" }]}
-            >
-              {/* Micro-label */}
-              <Text style={[s.microLabel, { color: COLORS.primary }]}>
-                NON-CUSTODIAL WALLET
-              </Text>
+            {FEATURES.map((item, i) => (
+              <FeatureCard
+                key={item.title}
+                item={item}
+                index={i}
+                scrollX={scrollX}
+                COLORS={COLORS}
+              />
+            ))}
+          </Animated.ScrollView>
 
-              {/* Headline */}
-              <Animated.View
-                style={{
-                  opacity: headlineFade,
-                  transform: [{ translateY: headlineSlide }],
-                }}
-              >
-                <Text style={s.headline}>
-                  Own the{"\n"}
-                  <Text style={{ color: "#F7C84A" }}>chain.</Text>
-                </Text>
-              </Animated.View>
-
-              {/* Sub */}
-              <Animated.Text
-                style={[
-                  s.sub,
-                  { color: COLORS.textSecondary, opacity: subFade },
-                ]}
-              >
-                Your keys, your assets — secured locally, never shared.
-              </Animated.Text>
-
-              {/* Stat pills */}
-              <Animated.View style={[s.pillRow, { opacity: subFade }]}>
-                <StatPill label="256-bit AES" COLORS={COLORS} />
-                <StatPill label="Multi-chain" COLORS={COLORS} />
-                <StatPill label="Open source" COLORS={COLORS} />
-              </Animated.View>
-
-              {/* CTA */}
-              <Animated.View
-                style={{
-                  opacity: btnFade,
-                  transform: [{ scale: btnScale }],
-                  marginTop: 24,
-                }}
-              >
-                <TouchableOpacity
-                  style={s.cta}
-                  onPress={() => navigation.navigate("Setup")}
-                  activeOpacity={0.82}
-                >
-                  <View style={s.ctaInner}>
-                    <Text style={s.ctaText}>Get Started</Text>
-                    <View style={s.ctaArrow}>
-                      <Ionicons
-                        name="arrow-forward"
-                        size={18}
-                        color="#0A0804"
-                      />
-                    </View>
-                  </View>
-                </TouchableOpacity>
-              </Animated.View>
-
-              {/* Bottom note */}
-              <Animated.View style={[s.noteRow, { opacity: subFade }]}>
-                <Ionicons
-                  name="shield-checkmark"
-                  size={12}
-                  color="#F7C84A"
-                  style={{ opacity: 0.7 }}
+          {/* ── Dots ── */}
+          <View style={styles.dots}>
+            {FEATURES.map((_, i) => {
+              const range = [
+                (i - 1) * INTERVAL,
+                i * INTERVAL,
+                (i + 1) * INTERVAL,
+              ];
+              const opacity = scrollX.interpolate({
+                inputRange: range,
+                outputRange: [0.3, 1, 0.3],
+                extrapolate: "clamp",
+              });
+              const scaleX = scrollX.interpolate({
+                inputRange: range,
+                outputRange: [1, 3, 1],
+                extrapolate: "clamp",
+              });
+              return (
+                <Animated.View
+                  key={i}
+                  style={[styles.dot, { opacity, transform: [{ scaleX }] }]}
                 />
-                <Text style={s.note}>No account. No cloud. 100% local.</Text>
-              </Animated.View>
-            </View>
-          </BlurView>
+              );
+            })}
+          </View>
         </Animated.View>
-      </SafeAreaView>
-    </View>
+      </ScrollView>
+
+      {/* ── Pinned actions ── */}
+      <View style={styles.footer}>
+        <TouchableOpacity
+          style={[styles.googleBtn, !google.ready && { opacity: 0.6 }]}
+          onPress={handleGoogle}
+          disabled={!!googleStage || !google.ready}
+          activeOpacity={0.8}
+        >
+          {googleStage ? (
+            <ActivityIndicator size="small" color={COLORS.text} />
+          ) : (
+            <Ionicons name="logo-google" size={19} color={COLORS.text} />
+          )}
+          <Text style={styles.googleText}>
+            {googleStage === "restore"
+              ? "Checking Google Drive for a backup…"
+              : googleStage === "signin"
+                ? "Signing in…"
+                : "Continue with Google"}
+          </Text>
+        </TouchableOpacity>
+
+        <Pressable
+          style={styles.driveRow}
+          onPress={() => setDriveBackup((v) => !v)}
+          disabled={!!googleStage}
+          accessibilityRole="checkbox"
+          accessibilityState={{ checked: driveBackup }}
+          hitSlop={6}
+        >
+          <View style={[styles.checkbox, driveBackup && styles.checkboxOn]}>
+            {driveBackup && <Ionicons name="checkmark" size={13} color="#000" />}
+          </View>
+          <Text style={styles.driveText}>
+            Back up my wallet to Google Drive (encrypted, restores automatically)
+          </Text>
+        </Pressable>
+
+        {!!notice && (
+          <View style={styles.noticeRow}>
+            <Ionicons
+              name="information-circle-outline"
+              size={14}
+              color={COLORS.textSecondary}
+            />
+            <Text style={styles.noticeText}>{notice}</Text>
+          </View>
+        )}
+
+        <TouchableOpacity
+          style={styles.primaryBtn}
+          onPress={() => navigation.navigate("Setup")}
+          activeOpacity={0.85}
+        >
+          <Text style={styles.primaryText}>Others</Text>
+          <Ionicons name="arrow-forward" size={20} color="#000" />
+        </TouchableOpacity>
+      </View>
+    </SafeAreaView>
   );
 };
 
 export default WelcomeScreen;
 
-// ─── Styles ───────────────────────────────────────────────────────────────────
-const s = StyleSheet.create({
-  root: {
-    flex: 1,
-    backgroundColor: "#000",
-  },
-  video: {
-    position: "absolute",
-    top: 0,
-    left: 0,
-    right: 0,
-    bottom: 0,
-    width,
-    height,
-  },
+// ─── Theme-aware styles ───────────────────────────────────────────────────────
+const getStyles = (COLORS) =>
+  StyleSheet.create({
+    safe: { flex: 1, backgroundColor: COLORS.background },
+    scroll: { flexGrow: 1, paddingTop: 16, paddingBottom: 16 },
 
-  // Overlay — two-layer gradient simulation
-  overlay: {
-    position: "absolute",
-    top: 0,
-    left: 0,
-    right: 0,
-    bottom: 0,
-  },
-  overlayTop: {
-    flex: 1,
-    backgroundColor: "transparent",
-  },
-  overlayBottom: {
-    height: height * 0.62,
-    // Deep black fade from below
-    backgroundColor: "rgba(4,3,2,0.72)",
-  },
+    appName: {
+      textAlign: "center",
+      fontSize: 15,
+      fontWeight: "800",
+      color: COLORS.text,
+      letterSpacing: 1.5,
+    },
 
-  safe: {
-    flex: 1,
-  },
+    // Circle
+    circleStage: {
+      alignSelf: "center",
+      alignItems: "center",
+      justifyContent: "center",
+      width: CIRCLE * 1.35,
+      height: CIRCLE * 1.35,
+      marginTop: 6,
+      marginBottom: 8,
+    },
+    halo: {
+      position: "absolute",
+      width: CIRCLE * 1.25,
+      height: CIRCLE * 1.25,
+      borderRadius: CIRCLE,
+      backgroundColor: COLORS.primary + "22",
+    },
+    circleRing: {
+      width: CIRCLE + 12,
+      height: CIRCLE + 12,
+      borderRadius: (CIRCLE + 12) / 2,
+      borderWidth: 2,
+      borderColor: COLORS.primary,
+      alignItems: "center",
+      justifyContent: "center",
+      backgroundColor: COLORS.background,
+    },
+    circleClip: {
+      width: CIRCLE,
+      height: CIRCLE,
+      borderRadius: CIRCLE / 2,
+      overflow: "hidden",
+      backgroundColor: COLORS.surface,
+    },
+    video: { width: CIRCLE, height: CIRCLE },
+    logoBadge: {
+      position: "absolute",
+      right: CIRCLE * 0.1,
+      bottom: CIRCLE * 0.12,
+      width: 42,
+      height: 42,
+      borderRadius: 21,
+      backgroundColor: COLORS.surface,
+      borderWidth: 3,
+      borderColor: COLORS.background,
+      alignItems: "center",
+      justifyContent: "center",
+    },
+    logoImg: { width: 24, height: 24 },
 
-  // Masthead
-  masthead: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 10,
-    paddingHorizontal: 22,
-    paddingTop: 14,
-  },
-  logoMark: {
-    width: 38,
-    height: 38,
-    borderRadius: 10,
-    borderWidth: 1.5,
-    overflow: "hidden",
-    alignItems: "center",
-    justifyContent: "center",
-    backgroundColor: "rgba(15,12,6,0.55)",
-  },
-  logoImg: {
-    width: 26,
-    height: 26,
-  },
-  appName: {
-    fontSize: 17,
-    fontWeight: "800",
-    color: "#F5EDD8",
-    letterSpacing: 1.8,
-    textTransform: "uppercase",
-  },
+    // Copy
+    headline: {
+      fontSize: 27,
+      lineHeight: 32,
+      fontWeight: "900",
+      letterSpacing: -0.8,
+      textAlign: "center",
+      color: COLORS.text,
+      paddingHorizontal: 28,
+    },
+    sub: {
+      fontSize: 14,
+      lineHeight: 21,
+      textAlign: "center",
+      color: COLORS.textSecondary,
+      marginTop: 8,
+      marginBottom: 22,
+      paddingHorizontal: 28,
+    },
 
-  // Panel
-  panel: {
-    width: "100%",
-    borderTopLeftRadius: 0,
-    borderTopRightRadius: 0,
-    overflow: "hidden",
-    position: "relative",
-  },
+    // Carousel
+    carousel: { paddingHorizontal: SIDE, gap: GAP, paddingVertical: 4 },
+    dots: {
+      flexDirection: "row",
+      alignItems: "center",
+      justifyContent: "center",
+      gap: 6,
+      marginTop: 14,
+    },
+    dot: {
+      width: 6,
+      height: 6,
+      borderRadius: 3,
+      backgroundColor: COLORS.primary,
+    },
 
-  // Amber edge
-  edgeLineSolid: {
-    position: "absolute",
-    top: 0,
-    left: 0,
-    right: 0,
-    height: 1.5,
-    backgroundColor: "#F7C84A",
-    zIndex: 10,
-  },
-  edgeLine: {
-    position: "absolute",
-    top: -6,
-    left: 0,
-    right: 0,
-    height: 14,
-    backgroundColor: "#F7C84A",
-    zIndex: 9,
-    // Glow achieved via shadow
-    shadowColor: "#F7C84A",
-    shadowOffset: { width: 0, height: 0 },
-    shadowOpacity: 1,
-    shadowRadius: 14,
-    elevation: 0,
-  },
-
-  // Scan shimmer
-  scanLine: {
-    position: "absolute",
-    top: -2,
-    left: 0,
-    width: 80,
-    height: 6,
-    backgroundColor: "rgba(255, 220, 100, 0.55)",
-    zIndex: 11,
-    borderRadius: 3,
-    shadowColor: "#FFD966",
-    shadowOffset: { width: 0, height: 0 },
-    shadowOpacity: 0.9,
-    shadowRadius: 8,
-  },
-
-  panelBlur: { width: "100%" },
-  panelInner: {
-    paddingTop: 28,
-    paddingBottom: 32,
-    paddingHorizontal: 26,
-  },
-
-  microLabel: {
-    fontSize: 10,
-    fontWeight: "800",
-    letterSpacing: 2.4,
-    marginBottom: 14,
-    opacity: 0.9,
-  },
-
-  headline: {
-    fontSize: 52,
-    fontWeight: "900",
-    color: "#F5EDD8",
-    letterSpacing: -1.5,
-    lineHeight: 54,
-    marginBottom: 16,
-  },
-
-  sub: {
-    fontSize: 14,
-    lineHeight: 21,
-    fontWeight: "400",
-    letterSpacing: 0.1,
-    marginBottom: 20,
-  },
-
-  pillRow: {
-    flexDirection: "row",
-    gap: 8,
-    flexWrap: "wrap",
-  },
-
-  // CTA
-  cta: {
-    borderRadius: 4,
-    overflow: "hidden",
-    backgroundColor: "#F7C84A",
-    shadowColor: "#F7C84A",
-    shadowOffset: { width: 0, height: 6 },
-    shadowOpacity: 0.35,
-    shadowRadius: 12,
-    elevation: 8,
-  },
-  ctaInner: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
-    paddingVertical: 17,
-    paddingHorizontal: 24,
-  },
-  ctaText: {
-    fontSize: 16,
-    fontWeight: "900",
-    color: "#0A0804",
-    letterSpacing: 0.4,
-  },
-  ctaArrow: {
-    width: 32,
-    height: 32,
-    borderRadius: 2,
-    backgroundColor: "rgba(10,8,4,0.12)",
-    alignItems: "center",
-    justifyContent: "center",
-  },
-
-  // Note
-  noteRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 6,
-    marginTop: 18,
-    justifyContent: "center",
-  },
-  note: {
-    fontSize: 11,
-    color: "rgba(197,168,100,0.65)",
-    fontWeight: "500",
-    letterSpacing: 0.3,
-  },
-});
+    // Footer actions
+    footer: {
+      paddingHorizontal: 20,
+      paddingTop: 12,
+      paddingBottom: 16,
+      gap: 10,
+      backgroundColor: COLORS.background,
+      borderTopWidth: 1,
+      borderTopColor: COLORS.primary + "18",
+    },
+    googleBtn: {
+      height: 54,
+      borderRadius: 27,
+      flexDirection: "row",
+      alignItems: "center",
+      justifyContent: "center",
+      gap: 10,
+      backgroundColor: COLORS.surface,
+      borderWidth: 1,
+      borderColor: COLORS.border,
+    },
+    googleText: { fontSize: 15, fontWeight: "700", color: COLORS.text },
+    driveRow: {
+      flexDirection: "row",
+      alignItems: "center",
+      gap: 8,
+      paddingHorizontal: 6,
+    },
+    checkbox: {
+      width: 18,
+      height: 18,
+      borderRadius: 5,
+      borderWidth: 1.5,
+      borderColor: COLORS.border,
+      alignItems: "center",
+      justifyContent: "center",
+    },
+    checkboxOn: { backgroundColor: COLORS.primary, borderColor: COLORS.primary },
+    driveText: { flex: 1, fontSize: 12, lineHeight: 16, color: COLORS.textSecondary },
+    noticeRow: {
+      flexDirection: "row",
+      alignItems: "center",
+      justifyContent: "center",
+      gap: 5,
+    },
+    noticeText: { fontSize: 12, color: COLORS.textSecondary },
+    primaryBtn: {
+      height: 54,
+      borderRadius: 27,
+      flexDirection: "row",
+      alignItems: "center",
+      justifyContent: "center",
+      gap: 8,
+      backgroundColor: COLORS.primary,
+    },
+    primaryText: { fontSize: 16, fontWeight: "800", color: "#000" },
+  });

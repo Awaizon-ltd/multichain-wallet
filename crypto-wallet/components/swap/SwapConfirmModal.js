@@ -17,6 +17,8 @@ import { Contract, MaxUint256 } from "ethers";
 import { useTheme } from "../../contexts/ThemeContext";
 import { useWallet } from "../../contexts/WalletContext";
 import { API_CONFIG } from "../../config/api";
+import { signAndSendSerializedTransaction } from "../../utils/SolanaService";
+import { apiGet } from "../../services/apiClient";
 
 // ─── App logo ─────────────────────────────────────────────────────────────────
 // Update this path to match your actual asset location.
@@ -44,7 +46,18 @@ const STEPS = {
 const getTxTo = (q) => q?.transaction?.to;
 const getTxData = (q) => q?.transaction?.data;
 const getTxValue = (q) => q?.transaction?.value ?? "0";
-const getTxGas = (q) => q?.transaction?.gas;
+const getTxGas = (q) => q?.transaction?.gas ?? q?.transaction?.gasLimit;
+// Solana quotes (Jupiter) carry a base64 versioned transaction instead
+const isSolanaQuote = (q) => q?.transaction?.chainType === "solana";
+
+// Swap tracking stores Solana under its token-list chain id (fits INTEGER)
+const SOLANA_TRACKING_CHAIN_ID = 501000101;
+
+// Base fee (one signature) + Jupiter's priority fee, in SOL
+const formatSolanaFee = (q) => {
+  const lamports = 5000 + Number(q?.transaction?.prioritizationFeeLamports || 0);
+  return `≈ ${(lamports / 1e9).toFixed(6)} SOL`;
+};
 
 const computeRate = (sellAmount, buyAmountEstimate, sellToken, buyToken) => {
   const sell = parseFloat(sellAmount);
@@ -97,6 +110,44 @@ const parseSwapError = (err) => {
         "Your wallet doesn't have enough funds to cover this swap and the gas fee.",
       icon: "wallet-outline",
       canRetry: false,
+    };
+  }
+
+  // Solana: Jupiter's SlippageToleranceExceeded is custom error 6001 (0x1771)
+  if (
+    message.includes("0x1771") ||
+    message.includes('"custom":6001') ||
+    message.includes("slippage")
+  ) {
+    return {
+      title: "Price Moved",
+      message:
+        "The price changed more than your slippage tolerance allows. Try again, or raise slippage in settings.",
+      icon: "trending-down-outline",
+      canRetry: true,
+    };
+  }
+
+  if (
+    message.includes("insufficient lamports") ||
+    message.includes("prior credit") // "...found no record of a prior credit"
+  ) {
+    return {
+      title: "Not Enough SOL",
+      message:
+        "Your wallet needs a little more SOL to cover network fees and token account rent for this swap.",
+      icon: "wallet-outline",
+      canRetry: false,
+    };
+  }
+
+  if (message.includes("expired") || message.includes("blockhash not found")) {
+    return {
+      title: "Quote Expired",
+      message:
+        "The swap took too long to confirm and expired. No funds were moved — please try again.",
+      icon: "time-outline",
+      canRetry: true,
     };
   }
 
@@ -313,11 +364,21 @@ export const SwapConfirmModal = ({
   buyToken,
   sellAmount,
   buyAmountEstimate,
+  chain,
+  buyChain,
 }) => {
   const theme = useTheme();
   const styles = createStyles(theme);
   const { COLORS } = theme;
-  const { createSignerForTransaction, address, provider } = useWallet();
+  const {
+    createSignerForTransaction,
+    createSolanaSignerForTransaction,
+    address: evmAddress,
+    solanaAddress,
+    provider,
+  } = useWallet();
+  const isSolana = isSolanaQuote(quote);
+  const address = isSolana ? solanaAddress : evmAddress;
 
   const [step, setStep] = useState(STEPS.PIN);
   const [pinError, setPinError] = useState("");
@@ -340,7 +401,10 @@ export const SwapConfirmModal = ({
   const handlePinComplete = async (passcode) => {
     try {
       setPinError("");
-      const walletSigner = await createSignerForTransaction(passcode);
+      // Solana: a web3.js Keypair; EVM: an ethers Signer
+      const walletSigner = isSolana
+        ? await createSolanaSignerForTransaction(passcode)
+        : await createSignerForTransaction(passcode);
       setSigner(walletSigner);
       setStep(STEPS.REVIEW);
     } catch {
@@ -348,9 +412,52 @@ export const SwapConfirmModal = ({
     }
   };
 
+  // Solana: sign Jupiter's transaction as-is and send it. SPL tokens have no
+  // approval step, so this goes straight to SWAPPING.
+  const handleConfirmSolana = async () => {
+    setStep(STEPS.SWAPPING);
+    setProgressLabel("Broadcasting your swap…");
+
+    const signature = await signAndSendSerializedTransaction(
+      signer,
+      quote.transaction.serialized,
+      { lastValidBlockHeight: quote.transaction.lastValidBlockHeight },
+    );
+
+    try {
+      // Swap tracking is per chain — cross-chain fills aren't recorded there
+      if (!quote.crossChain) await fetch(`${API_BASE_URL}/swap/record`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          wallet_address: address,
+          chain_id: SOLANA_TRACKING_CHAIN_ID,
+          sell_token_symbol: sellToken.symbol,
+          sell_token_address: sellToken.address,
+          buy_token_symbol: buyToken.symbol,
+          buy_token_address: buyToken.address,
+          sell_amount_raw: quote.sellAmount,
+          buy_amount_raw: quote.buyAmount ?? "0",
+          tx_hash: signature,
+          price_impact: quote.estimatedPriceImpact ?? null,
+        }),
+      });
+    } catch (recordErr) {
+      if (__DEV__)
+        console.warn("[SwapConfirmModal] record failed:", recordErr.message);
+    }
+
+    const receipt = { hash: signature };
+    setTxInfo(receipt);
+    setStep(STEPS.SUCCESS);
+    if (onSuccess) onSuccess(receipt);
+  };
+
   const handleConfirm = async () => {
     if (!signer || !quote) return;
     try {
+      if (isSolana) return await handleConfirmSolana();
+
       // ── Token approval ───────────────────────────────────────────────────────
       const needsApproval =
         !sellToken.isNative &&
@@ -411,9 +518,9 @@ export const SwapConfirmModal = ({
       setProgressLabel("Waiting for block confirmation…");
       const receipt = await tx.wait();
 
-      // ── Record swap (non-fatal) ──────────────────────────────────────────────
+      // ── Record swap (non-fatal; same-chain only — tracking is per chain) ─────
       try {
-        await fetch(`${API_BASE_URL}/swap/record`, {
+        if (!quote.crossChain) await fetch(`${API_BASE_URL}/swap/record`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
@@ -509,7 +616,9 @@ export const SwapConfirmModal = ({
                     : step === STEPS.SWAPPING
                       ? "Swapping"
                       : step === STEPS.SUCCESS
-                        ? "Swap Complete"
+                        ? quote?.crossChain
+                          ? "Swap Submitted"
+                          : "Swap Complete"
                         : "Swap Failed"}
               </Text>
 
@@ -556,6 +665,8 @@ export const SwapConfirmModal = ({
                 <SuccessContent
                   theme={theme}
                   txInfo={txInfo}
+                  quote={quote}
+                  buyChain={buyChain}
                   sellToken={sellToken}
                   buyToken={buyToken}
                   sellAmount={sellAmount}
@@ -618,9 +729,11 @@ const ReviewContent = ({
     buyToken,
   );
   const minReceived = formatMinReceived(quote, buyToken);
-  const gasLabel = getTxGas(quote)
-    ? `~${parseInt(getTxGas(quote)).toLocaleString()} units`
-    : "—";
+  const gasLabel = isSolanaQuote(quote)
+    ? formatSolanaFee(quote)
+    : getTxGas(quote)
+      ? `~${parseInt(getTxGas(quote)).toLocaleString()} units`
+      : "—";
 
   return (
     <View>
@@ -686,7 +799,12 @@ const ReviewContent = ({
             valueColor={impactColor}
           />
         )}
-        <DetailRow theme={theme} label="Gas Estimate" value={gasLabel} last />
+        <DetailRow
+          theme={theme}
+          label={isSolanaQuote(quote) ? "Network Fee" : "Gas Estimate"}
+          value={gasLabel}
+          last
+        />
 
         {needsApproval && (
           <View style={styles.approvalBanner}>
@@ -741,9 +859,48 @@ const ProcessingContent = ({ theme, label, isApproving }) => {
 };
 
 // ─── SuccessContent ───────────────────────────────────────────────────────────
+// Cross-chain: poll LI.FI until the funds land on the destination chain
+const CROSS_CHAIN_POLL_MS = 10_000;
+const CROSS_CHAIN_POLL_MAX_MS = 30 * 60_000;
+
+const useCrossChainStatus = (quote, txHash) => {
+  const [status, setStatus] = useState("PENDING"); // PENDING | DONE | FAILED
+  useEffect(() => {
+    if (!quote?.crossChain || !txHash) return;
+    let stopped = false;
+    const started = Date.now();
+    const poll = async () => {
+      if (stopped) return;
+      try {
+        const res = await apiGet(API_CONFIG.ENDPOINTS.BRIDGE_STATUS_QUERY, {
+          ttl: 0,
+          params: { txHash, ...(quote.statusParams || {}) },
+        });
+        if (res?.status === "DONE" || res?.status === "FAILED") {
+          setStatus(res.status);
+          return; // final
+        }
+      } catch {
+        // Not indexed yet (404) or a blip — keep polling
+      }
+      if (Date.now() - started < CROSS_CHAIN_POLL_MAX_MS) {
+        timer = setTimeout(poll, CROSS_CHAIN_POLL_MS);
+      }
+    };
+    let timer = setTimeout(poll, CROSS_CHAIN_POLL_MS);
+    return () => {
+      stopped = true;
+      clearTimeout(timer);
+    };
+  }, [quote, txHash]);
+  return status;
+};
+
 const SuccessContent = ({
   theme,
   txInfo,
+  quote,
+  buyChain,
   sellToken,
   buyToken,
   sellAmount,
@@ -751,16 +908,50 @@ const SuccessContent = ({
   onClose,
 }) => {
   const styles = createStyles(theme);
+  const { COLORS } = theme;
+  const crossStatus = useCrossChainStatus(quote, txInfo?.hash);
+  const cross = !!quote?.crossChain;
+  const etaMin = quote?.estimatedDurationSeconds
+    ? Math.max(1, Math.ceil(quote.estimatedDurationSeconds / 60))
+    : null;
+  const arrived = cross && crossStatus === "DONE";
+  const failed = cross && crossStatus === "FAILED";
+
   return (
     <View style={styles.centered}>
       <View style={styles.successCircle}>
-        <Ionicons name="checkmark" size={44} color="#fff" />
+        {cross && !arrived && !failed ? (
+          <ActivityIndicator color="#fff" size="large" />
+        ) : (
+          <Ionicons name={failed ? "alert" : "checkmark"} size={44} color="#fff" />
+        )}
       </View>
-      <Text style={styles.resultTitle}>Swap Complete!</Text>
+      <Text style={styles.resultTitle}>
+        {!cross
+          ? "Swap Complete!"
+          : arrived
+            ? "Arrived!"
+            : failed
+              ? "Needs attention"
+              : "On its way"}
+      </Text>
       <Text style={styles.resultSubtitle}>
         {sellAmount} {sellToken?.symbol}
         {"\n"}→ {buyAmountEstimate} {buyToken?.symbol}
+        {cross && buyChain ? ` on ${buyChain.name}` : ""}
       </Text>
+      {cross && !arrived && !failed && (
+        <Text style={[styles.resultSubtitle, { color: COLORS.textTertiary }]}>
+          {etaMin ? `Usually arrives in ~${etaMin} min. ` : ""}You can close this —
+          it keeps going in the background.
+        </Text>
+      )}
+      {failed && (
+        <Text style={[styles.resultSubtitle, { color: COLORS.error }]}>
+          The route reported a problem. Funds are usually refunded on the
+          source chain automatically — check your balance shortly.
+        </Text>
+      )}
       <View style={styles.detailCard}>
         {txInfo?.hash && (
           <DetailRow

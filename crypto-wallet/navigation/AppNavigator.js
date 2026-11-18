@@ -33,9 +33,11 @@ import ChangePasscodeScreen from "../screens/auth/ChangePasscodeScreen";
 import AccountManager from "../screens/wallet/AccountManager";
 import BindWalletScreen from "../screens/settings/BindingWalletScreen";
 import SwapBridgeScreen from "../screens/swap/SwapBridgeScreen";
+import AdvancedSwapScreen from "../screens/swap/AdvancedSwapScreen";
 import PaymentScreen from "../screens/wallet/PaymentScreen";
 import BannerDetailScreen from "../screens/settings/BannerDetailScreen";
 import AccentColorScreen from "../screens/settings/AccentColorScreen";
+import CloudBackupScreen from "../screens/settings/CloudBackupScreen";
 
 const Stack = createNativeStackNavigator();
 const Tab = createBottomTabNavigator();
@@ -49,7 +51,7 @@ const CIRCLE_SIZE = 56;
 
 const iconMap = {
   WalletTab: { focused: "wallet", blur: "wallet-outline" },
-  MarketTab: { focused: "stats-chart", blur: "stats-chart-outline" },
+  AdvancedTab: { focused: "stats-chart", blur: "stats-chart-outline" },
   BrowserTab: { focused: "compass", blur: "compass-outline" },
   ActivityTab: { focused: "time", blur: "time-outline" },
   SwapTab: { focused: "repeat", blur: "repeat-outline" },
@@ -57,7 +59,7 @@ const iconMap = {
 
 const labelMap = {
   WalletTab: "Wallet",
-  MarketTab: "Market",
+  AdvancedTab: "Advanced",
   BrowserTab: "Explore",
   ActivityTab: "Activity",
   SwapTab: "Swap",
@@ -207,7 +209,9 @@ const MainTabs = () => (
     screenOptions={{ headerShown: false }}
   >
     <Tab.Screen name="WalletTab" component={HomeScreen} />
-    <Tab.Screen name="MarketTab" component={MarketScreen} />
+    {/* Advanced Swap: candles + market stats + swap. Markets (trending) live
+        in its pair sheet; the full Market screen is still a stack route. */}
+    <Tab.Screen name="AdvancedTab" component={AdvancedSwapScreen} />
     <Tab.Screen name="SwapTab" component={SwapBridgeScreen} />
     <Tab.Screen name="ActivityTab" component={TransactionsScreen} />
     <Tab.Screen name="BrowserTab" component={BrowserScreen} />
@@ -252,7 +256,7 @@ const AppNavigator = () => {
       <Stack.Screen
         name="Send"
         component={SendScreen}
-        options={{ title: "Send", headerBackTitle: "Back" }}
+        options={{ headerShown: false }}
       />
 
       <Stack.Screen
@@ -339,6 +343,11 @@ const AppNavigator = () => {
         options={{ headerShown: false }}
       />
       <Stack.Screen
+        name="Market"
+        component={MarketScreen}
+        options={{ title: "Market", headerBackTitle: "Back" }}
+      />
+      <Stack.Screen
         name="Settings"
         component={SettingsScreen}
         options={{ title: "Settings", headerBackTitle: "Back" }}
@@ -362,6 +371,11 @@ const AppNavigator = () => {
         name="AboutSettings"
         component={AboutSettingsScreen}
         options={{ title: "About", headerBackTitle: "Back" }}
+      />
+      <Stack.Screen
+        name="CloudBackup"
+        component={CloudBackupScreen}
+        options={{ title: "Cloud Backup", headerBackTitle: "Back" }}
       />
       <Stack.Screen
         name="AccentColor"

@@ -1,7 +1,20 @@
 // hooks/useSwap.js
+// ─────────────────────────────────────────────────────────────────────────────
+// One swap, any two chains. The user picks what they pay and what they get —
+// each on its own chain — and this decides how it's filled:
+//
+//   same chain, EVM     → /swap/price + /swap/quote   (0x, backend)
+//   same chain, Solana  → /swap/price + /swap/quote   (Jupiter, backend)
+//   different chains    → /bridge/quote               (LI.FI: bridge + swap in one tx)
+//
+// Cross-chain quotes are normalized to the same fields the swap screen and
+// SwapConfirmModal already read (buyAmount, minBuyAmount, transaction,
+// needsApproval, allowanceTarget), tagged `crossChain: true`, so there's one
+// confirm/sign path and the user never has to know a bridge is involved.
+// ─────────────────────────────────────────────────────────────────────────────
 import { useState, useCallback, useRef, useEffect } from "react";
 import { useWallet } from "../contexts/WalletContext";
-import { useChain } from "../contexts/ChainContext";
+import { useChain, isSolanaChain } from "../contexts/ChainContext";
 import { parseUnits, formatUnits } from "ethers";
 import { API_CONFIG } from "../config/api";
 import { apiGet } from "../services/apiClient";
@@ -13,11 +26,6 @@ const NATIVE_TOKEN_ADDRESS = "0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE";
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
 const safeParseUnits = (amount, decimals) => {
-  if (__DEV__)
-    console.log(
-      `[safeParseUnits] input: ${JSON.stringify(amount)}  decimals: ${JSON.stringify(decimals)}  type: ${typeof decimals}`,
-    );
-
   if (!amount || String(amount).trim() === "") {
     throw new Error("Amount is empty");
   }
@@ -29,44 +37,62 @@ const safeParseUnits = (amount, decimals) => {
   else cleaned = cleaned.replace(/,/g, "");
 
   const num = Number(cleaned);
-  if (__DEV__)
-    console.log(
-      `[safeParseUnits] cleaned: ${JSON.stringify(cleaned)}  num: ${num}  isNaN: ${isNaN(num)}`,
-    );
-
   if (isNaN(num) || !isFinite(num)) throw new Error("Invalid amount");
 
   // ethers v6 requires decimals as a NUMBER — parseInt guards against string decimals
   const dec = parseInt(decimals, 10);
-  if (__DEV__)
-    console.log(
-      `[safeParseUnits] dec (after parseInt): ${dec}  isNaN: ${isNaN(dec)}`,
-    );
-
   if (isNaN(dec) || dec < 0) throw new Error("Invalid token decimals");
 
   const fixed = num.toFixed(dec);
   const [whole, frac] = fixed.split(".");
   const clamped = frac ? `${whole}.${frac.slice(0, dec)}` : whole;
-
-  if (__DEV__)
-    console.log(
-      `[safeParseUnits] clamped: ${JSON.stringify(clamped)}  → calling parseUnits`,
-    );
-  const result = parseUnits(clamped, dec);
-  if (__DEV__) console.log(`[safeParseUnits] result: ${result.toString()}`);
-  return result;
+  return parseUnits(clamped, dec);
 };
 
-const resolveTokenAddress = (token) => {
+// EVM native → 0x's 0xEeee… placeholder (LI.FI accepts it too). Solana tokens
+// (native SOL included, as the wSOL mint) are passed by mint address.
+const resolveTokenAddress = (token, isSolana = false) => {
   if (!token) return null;
+  if (isSolana) return token.address;
   return token.isNative ? NATIVE_TOKEN_ADDRESS : token.address;
 };
 
+// Native balance held back by "Max" for network fees. SOL needs more than a
+// bare fee: a first swap into a token also pays ~0.002 SOL account rent.
+const NATIVE_FEE_RESERVE = { evm: 0.002, solana: 0.01 };
+
+const sameToken = (a, b) =>
+  !!a &&
+  !!b &&
+  (a.isNative && b.isNative
+    ? true
+    : !a.isNative &&
+      !b.isNative &&
+      a.address?.toLowerCase() === b.address?.toLowerCase());
+
+const loadCatalog = async (chainId) => {
+  const json = await apiGet(API_CONFIG.ENDPOINTS.SWAP_TOKENS, {
+    params: { chainId },
+    ttl: TTL.API_TOKEN_CATALOG,
+  });
+  return json.data?.tokens ?? [];
+};
+
 // ─── Hook ─────────────────────────────────────────────────────────────────────
-export function useSwap() {
-  const { address } = useWallet();
-  const { activeChain } = useChain();
+// `sellChainOverride`: the chain the user pays on (the swap screen keeps its
+// own, since Solana can't be the global active chain). Defaults to
+// ChainContext's active EVM chain. `buyChainOverride`: the chain they receive
+// on; defaults to the sell chain (a same-chain swap).
+export function useSwap(sellChainOverride, buyChainOverride) {
+  const { address: evmAddress, solanaAddress } = useWallet();
+  const { activeChain: contextChain } = useChain();
+  const activeChain = sellChainOverride ?? contextChain;
+  const buyChain = buyChainOverride ?? activeChain;
+  const isSolana = isSolanaChain(activeChain);
+  const buyIsSolana = isSolanaChain(buyChain);
+  const isCrossChain = !!buyChain && buyChain.id !== activeChain?.id;
+  const address = isSolana ? solanaAddress : evmAddress; // pays from
+  const recipient = buyIsSolana ? solanaAddress : evmAddress; // receives at
 
   const [sellToken, setSellToken] = useState(null);
   const [buyToken, setBuyToken] = useState(null);
@@ -75,86 +101,116 @@ export function useSwap() {
   const [quote, setQuote] = useState(null);
   const [priceInfo, setPriceInfo] = useState(null);
   const [slippage, setSlippage] = useState(DEFAULT_SLIPPAGE);
-  const [tokenList, setTokenList] = useState([]);
+  const [tokenList, setTokenList] = useState([]); // sell chain
+  const [crossBuyList, setCrossBuyList] = useState([]); // buy chain, when different
   const [loadingTokens, setLoadingTokens] = useState(false);
+  const [loadingBuyTokens, setLoadingBuyTokens] = useState(false);
   const [isFetchingPrice, setIsFetchingPrice] = useState(false);
   const [isFetchingQuote, setIsFetchingQuote] = useState(false);
   const [error, setError] = useState(null);
+
+  const buyTokenList = isCrossChain ? crossBuyList : tokenList;
 
   const priceAbortRef = useRef(null);
   const quoteAbortRef = useRef(null);
 
   // Buy-token preselection from outside the screen (e.g. "Swap" on a token's
-  // detail page). If the token is on another chain, it waits here until that
-  // chain's token list has loaded, then replaces the default buy token.
+  // detail page). Applied once the list for the token's chain has loaded.
   const pendingBuyRef = useRef(null);
-  const loadedRef = useRef({ chainId: null, tokens: [] });
+  const pendingSellRef = useRef(null); // same, for the sell side (cross-chain flip)
+  const loadedRef = useRef({ chainId: null, tokens: [] }); // buy-side list
+  const isCrossRef = useRef(isCrossChain);
+  isCrossRef.current = isCrossChain;
 
   const applyBuyToken = useCallback((token, tokens) => {
-    const same = (a, b) =>
-      a && b && (a.isNative && b.isNative
-        ? true
-        : !a.isNative && !b.isNative &&
-          a.address?.toLowerCase() === b.address?.toLowerCase());
-    const target = tokens.find((t) => same(t, token)) ?? token;
+    const target = tokens.find((t) => sameToken(t, token)) ?? token;
     setBuyToken(target);
-    setSellToken((prev) => {
-      if (prev && !same(prev, target)) return prev;
-      return tokens.find((t) => !same(t, target)) ?? null;
-    });
     setSellAmount("");
     setBuyAmountEstimate("");
     setPriceInfo(null);
   }, []);
 
+  const resetQuoteState = () => {
+    setQuote(null);
+    setPriceInfo(null);
+    setBuyAmountEstimate("");
+    setError(null);
+  };
+
+  // ── Sell chain changed: its catalog, a fresh sell token ─────────────────────
   useEffect(() => {
-    if (activeChain?.id) {
-      if (__DEV__)
-        console.log(
-          `[useSwap] chain changed → ${activeChain.id}, reloading tokens`,
-        );
-      loadTokens();
-      setQuote(null);
-      setPriceInfo(null);
-      setBuyAmountEstimate("");
-      setSellToken(null);
-      setBuyToken(null);
-      setSellAmount("");
-      setError(null);
-    }
+    if (!activeChain?.id) return;
+    resetQuoteState();
+    setSellToken(null);
+    setSellAmount("");
+    if (!isCrossRef.current) setBuyToken(null);
+    loadTokens();
   }, [activeChain?.id]);
 
-  // ── Token loading ────────────────────────────────────────────────────────────
-  // Cached 10min via apiClient — a chain's token catalog barely changes, so
-  // switching chains and coming back doesn't re-fetch it every time.
+  // ── Buy chain changed (cross-chain): its catalog, a fresh buy token ─────────
+  useEffect(() => {
+    if (!isCrossChain || !buyChain?.id) return;
+    let cancelled = false;
+    resetQuoteState();
+    setLoadingBuyTokens(true);
+    loadCatalog(buyChain.id)
+      .then((tokens) => {
+        if (cancelled) return;
+        setCrossBuyList(tokens);
+        loadedRef.current = { chainId: buyChain.id, tokens };
+        const pending = pendingBuyRef.current;
+        if (pending && pending.chainId === buyChain.id) {
+          pendingBuyRef.current = null;
+          applyBuyToken(pending, tokens);
+        } else {
+          setBuyToken((prev) =>
+            prev && prev.chainId === buyChain.id ? prev : tokens[0] ?? null,
+          );
+        }
+      })
+      .catch((err) => !cancelled && setError(err.message || "Couldn't load tokens"))
+      .finally(() => !cancelled && setLoadingBuyTokens(false));
+    return () => {
+      cancelled = true;
+    };
+  }, [buyChain?.id, isCrossChain]);
+
+  // Back to same-chain: the buy token must come from the sell chain's list
+  useEffect(() => {
+    if (isCrossChain) return;
+    setBuyToken((prev) =>
+      prev && tokenList.some((t) => sameToken(t, prev))
+        ? prev
+        : tokenList.find((t) => !sameToken(t, sellToken)) ?? null,
+    );
+  }, [isCrossChain]);
+
+  // ── Token loading (sell chain) ───────────────────────────────────────────────
+  // Cached 10min via apiClient — a chain's token catalog barely changes.
   const loadTokens = useCallback(async () => {
     try {
       setLoadingTokens(true);
-      if (__DEV__) console.log(`[useSwap loadTokens] chainId=${activeChain.id}`);
-
-      const json = await apiGet(API_CONFIG.ENDPOINTS.SWAP_TOKENS, {
-        params: { chainId: activeChain.id },
-        ttl: TTL.API_TOKEN_CATALOG,
-      });
-
-      if (__DEV__)
-        console.log(
-          `[useSwap loadTokens] count=${json.data?.tokens?.length}`,
-        );
-
-      setTokenList(json.data.tokens);
-      loadedRef.current = { chainId: activeChain.id, tokens: json.data.tokens };
-      if (json.data.tokens.length >= 2) {
-        setSellToken(json.data.tokens[0]);
-        setBuyToken(json.data.tokens[1]);
+      const tokens = await loadCatalog(activeChain.id);
+      setTokenList(tokens);
+      const pendingSell = pendingSellRef.current;
+      if (pendingSell && pendingSell.chainId === activeChain.id) {
+        pendingSellRef.current = null;
+        setSellToken(tokens.find((t) => sameToken(t, pendingSell)) ?? pendingSell);
+      } else if (tokens.length) {
+        setSellToken(tokens[0]);
       }
-      const pending = pendingBuyRef.current;
-      if (pending && pending.chainId === activeChain.id) {
-        pendingBuyRef.current = null;
-        applyBuyToken(pending, json.data.tokens);
+
+      if (!isCrossRef.current) {
+        loadedRef.current = { chainId: activeChain.id, tokens };
+        const pending = pendingBuyRef.current;
+        if (pending && pending.chainId === activeChain.id) {
+          pendingBuyRef.current = null;
+          applyBuyToken(pending, tokens);
+        } else if (tokens.length >= 2) {
+          setBuyToken(tokens[1]);
+        }
       }
     } catch (err) {
-      if (__DEV__) console.error("[useSwap loadTokens] ERROR:", err.message);
       setError(err.message || "Couldn't load tokens for this chain");
     } finally {
       setLoadingTokens(false);
@@ -163,8 +219,8 @@ export function useSwap() {
 
   /**
    * Preselect the token to buy. token: { chainId, address, symbol, name,
-   * decimals, logoURI, isNative }. Applies now if that chain's list is
-   * already loaded, otherwise once it loads (after a chain switch).
+   * decimals, logoURI, isNative }. The caller sets the buy chain to
+   * token.chainId; this applies the token once that chain's list is loaded.
    */
   const queueBuyToken = useCallback(
     (token) => {
@@ -179,39 +235,64 @@ export function useSwap() {
     [applyBuyToken],
   );
 
-  // ── Price fetch ──────────────────────────────────────────────────────────────
-  const fetchPrice = useCallback(async () => {
-    if (__DEV__) console.log("\n[useSwap fetchPrice] ━━━ START ━━━");
-    if (__DEV__)
-      console.log(
-        "[useSwap fetchPrice] sellToken  :",
-        sellToken
-          ? `${sellToken.symbol} (decimals=${sellToken.decimals} type=${typeof sellToken.decimals} addr=${sellToken.address})`
-          : "null",
-      );
-    if (__DEV__)
-      console.log(
-        "[useSwap fetchPrice] buyToken   :",
-        buyToken
-          ? `${buyToken.symbol}  (decimals=${buyToken.decimals}  type=${typeof buyToken.decimals}  addr=${buyToken.address})`
-          : "null",
-      );
-    if (__DEV__)
-      console.log(
-        "[useSwap fetchPrice] sellAmount :",
-        sellAmount,
-        " parsed:",
-        parseFloat(sellAmount),
-      );
-    if (__DEV__) console.log("[useSwap fetchPrice] slippage   :", slippage);
-    if (__DEV__)
-      console.log("[useSwap fetchPrice] chainId    :", activeChain?.id);
-    if (__DEV__)
-      console.log("[useSwap fetchPrice] address    :", address || "(none)");
+  /** Same as queueBuyToken, for the sell side. */
+  const queueSellToken = useCallback((token) => {
+    pendingSellRef.current = token;
+  }, []);
 
+  // ── Request params ───────────────────────────────────────────────────────────
+  const buildRequest = useCallback(() => {
+    const sellAmountWei = safeParseUnits(sellAmount, sellToken.decimals).toString();
+    const sellAddr = resolveTokenAddress(sellToken, isSolana);
+    const buyAddr = resolveTokenAddress(buyToken, buyIsSolana);
+
+    if (isCrossChain) {
+      if (!address || !recipient) {
+        throw new Error(
+          `Your ${!address ? activeChain.name : buyChain.name} address isn't ready yet. Unlock your wallet and try again.`,
+        );
+      }
+      return {
+        path: API_CONFIG.ENDPOINTS.BRIDGE_QUOTE,
+        params: {
+          fromChain: activeChain.id,
+          toChain: buyChain.id,
+          fromToken: sellAddr,
+          toToken: buyAddr,
+          fromAmount: sellAmountWei,
+          fromAddress: address,
+          toAddress: recipient,
+          slippage,
+        },
+      };
+    }
+    return {
+      params: {
+        chainId: activeChain.id,
+        sellToken: sellAddr,
+        buyToken: buyAddr,
+        sellAmount: sellAmountWei,
+        slippagePercentage: slippage,
+        ...(address && { takerAddress: address }),
+      },
+    };
+  }, [sellToken, buyToken, sellAmount, slippage, activeChain, buyChain, isCrossChain, isSolana, buyIsSolana, address, recipient]);
+
+  // LI.FI's normalized quote → the swap-quote shape the UI reads
+  const fromCrossChain = (d) => ({
+    ...d,
+    crossChain: true,
+    chainId: activeChain.id,
+    toChainId: buyChain.id,
+    minBuyAmount: d.buyAmountMin,
+    estimatedPriceImpact: null,
+  });
+
+  // ── Price fetch ──────────────────────────────────────────────────────────────
+  // Cross-chain has no separate "indicative price" endpoint — LI.FI's quote
+  // is it (and is re-fetched fresh when the user taps Swap).
+  const fetchPrice = useCallback(async () => {
     if (!sellToken || !buyToken || !sellAmount || parseFloat(sellAmount) <= 0) {
-      if (__DEV__)
-        console.log("[useSwap fetchPrice] SKIPPED — missing/zero inputs");
       setBuyAmountEstimate("");
       setPriceInfo(null);
       return;
@@ -224,116 +305,33 @@ export function useSwap() {
       setIsFetchingPrice(true);
       setError(null);
 
-      // ── Step 1: convert to wei ──────────────────────────────────────────────
-      if (__DEV__)
-        console.log("\n[useSwap fetchPrice] Step 1 — safeParseUnits");
-      const sellAmountWei = safeParseUnits(
-        sellAmount,
-        sellToken.decimals,
-      ).toString();
-      if (__DEV__)
-        console.log("[useSwap fetchPrice] sellAmountWei:", sellAmountWei);
-
-      // ── Step 2: build URL ───────────────────────────────────────────────────
-      const sellAddr = resolveTokenAddress(sellToken);
-      const buyAddr = resolveTokenAddress(buyToken);
-      if (__DEV__)
-        console.log("\n[useSwap fetchPrice] Step 2 — resolveTokenAddress");
-      if (__DEV__) console.log("[useSwap fetchPrice] sellAddr:", sellAddr);
-      if (__DEV__) console.log("[useSwap fetchPrice] buyAddr :", buyAddr);
-
-      if (__DEV__) console.log("\n[useSwap fetchPrice] Step 3 — apiGet");
-
+      const req = buildRequest();
       // Never cached — price depends on live market + the exact amount typed.
-      const json = await apiGet(API_CONFIG.ENDPOINTS.SWAP_PRICE, {
+      const json = await apiGet(req.path ?? API_CONFIG.ENDPOINTS.SWAP_PRICE, {
         ttl: 0,
         signal: priceAbortRef.current.signal,
-        params: {
-          chainId: activeChain.id,
-          sellToken: sellAddr,
-          buyToken: buyAddr,
-          sellAmount: sellAmountWei,
-          slippagePercentage: slippage,
-          ...(address && { takerAddress: address }),
-        },
+        params: req.params,
       });
 
-      if (__DEV__)
-        console.log(
-          "[useSwap fetchPrice] buyAmount:",
-          json.data?.buyAmount,
-          " price:",
-          json.data?.price,
-        );
-
-      const data = json.data;
+      const data = isCrossChain ? fromCrossChain(json.data) : json.data;
       setPriceInfo(data);
 
-      // ── Step 4: format buy amount ───────────────────────────────────────────
-      if (__DEV__) console.log("\n[useSwap fetchPrice] Step 5 — formatUnits");
       const buyDec = parseInt(buyToken.decimals, 10);
-      const buyAmountStr = String(data.buyAmount);
-      if (__DEV__) console.log("[useSwap fetchPrice] buyDec       :", buyDec);
-      if (__DEV__)
-        console.log(
-          "[useSwap fetchPrice] buyAmountStr :",
-          buyAmountStr,
-          " type:",
-          typeof buyAmountStr,
-        );
-
-      const formattedBuyAmount = formatUnits(buyAmountStr, buyDec);
-      const estimate = parseFloat(formattedBuyAmount).toFixed(
-        Math.min(buyDec, 6),
-      );
-      if (__DEV__)
-        console.log(
-          "[useSwap fetchPrice] formattedBuyAmount:",
-          formattedBuyAmount,
-        );
-      if (__DEV__)
-        console.log("[useSwap fetchPrice] estimate          :", estimate);
-
-      setBuyAmountEstimate(estimate);
-      if (__DEV__) console.log("\n[useSwap fetchPrice] ✅ SUCCESS");
+      const formatted = formatUnits(String(data.buyAmount), buyDec);
+      setBuyAmountEstimate(parseFloat(formatted).toFixed(Math.min(buyDec, 6)));
     } catch (err) {
-      // apiGet() already humanizes errors into { title, message, type } —
       // "cancelled" means a newer request superseded this one, not a failure.
-      if (err.type === "cancelled") {
-        if (__DEV__)
-          console.log(
-            "[useSwap fetchPrice] aborted (new request superseded this one)",
-          );
-        return;
-      }
-      if (__DEV__) console.error("[useSwap fetchPrice] ❌ ERROR:", err.message);
+      if (err.type === "cancelled") return;
       setError(err.message);
       setBuyAmountEstimate("");
       setPriceInfo(null);
     } finally {
       setIsFetchingPrice(false);
     }
-  }, [sellToken, buyToken, sellAmount, slippage, activeChain?.id, address]);
+  }, [buildRequest, sellToken, buyToken, sellAmount, isCrossChain]);
 
   // ── Quote fetch ──────────────────────────────────────────────────────────────
   const fetchQuote = useCallback(async () => {
-    if (__DEV__) console.log("\n[useSwap fetchQuote] ━━━ START ━━━");
-    if (__DEV__)
-      console.log(
-        "[useSwap fetchQuote] sellToken  :",
-        sellToken?.symbol,
-        "decimals:",
-        sellToken?.decimals,
-      );
-    if (__DEV__)
-      console.log(
-        "[useSwap fetchQuote] buyToken   :",
-        buyToken?.symbol,
-        "decimals:",
-        buyToken?.decimals,
-      );
-    if (__DEV__) console.log("[useSwap fetchQuote] sellAmount :", sellAmount);
-
     if (!sellToken || !buyToken || !sellAmount || parseFloat(sellAmount) <= 0) {
       throw new Error("Invalid swap parameters");
     }
@@ -345,61 +343,30 @@ export function useSwap() {
       setIsFetchingQuote(true);
       setError(null);
 
-      const sellAmountWei = safeParseUnits(
-        sellAmount,
-        sellToken.decimals,
-      ).toString();
-      if (__DEV__)
-        console.log("[useSwap fetchQuote] sellAmountWei:", sellAmountWei);
-
-      const sellAddr = resolveTokenAddress(sellToken);
-      const buyAddr = resolveTokenAddress(buyToken);
-
-      // Never cached — a quote is single-use (nonce/allowance-target tied to
-      // this exact request) and must always reflect the current market.
-      const json = await apiGet(API_CONFIG.ENDPOINTS.SWAP_QUOTE, {
+      const req = buildRequest();
+      // Never cached — a quote is single-use and must reflect the current market.
+      const json = await apiGet(req.path ?? API_CONFIG.ENDPOINTS.SWAP_QUOTE, {
         ttl: 0,
         signal: quoteAbortRef.current.signal,
-        params: {
-          chainId: activeChain.id,
-          sellToken: sellAddr,
-          buyToken: buyAddr,
-          sellAmount: sellAmountWei,
-          slippagePercentage: slippage,
-          ...(address && { takerAddress: address }),
-        },
+        params: req.params,
       });
 
-      if (__DEV__)
-        console.log(
-          "[useSwap fetchQuote] needsApproval:",
-          json.data?.needsApproval,
-          " buyAmount:",
-          json.data?.buyAmount,
-        );
-
-      setQuote(json.data);
-      if (__DEV__) console.log("[useSwap fetchQuote] ✅ SUCCESS");
-      return json.data;
+      const data = isCrossChain ? fromCrossChain(json.data) : json.data;
+      setQuote(data);
+      return data;
     } catch (err) {
       if (err.type === "cancelled") return;
-      if (__DEV__) console.error("[useSwap fetchQuote] ❌ ERROR:", err.message);
       setError(err.message);
       throw err;
     } finally {
       setIsFetchingQuote(false);
     }
-  }, [sellToken, buyToken, sellAmount, slippage, activeChain?.id, address]);
+  }, [buildRequest, sellToken, buyToken, sellAmount, isCrossChain]);
 
   // ── Flip tokens ──────────────────────────────────────────────────────────────
+  // Cross-chain flips swap the chains too — the caller owns the chain state,
+  // so it's told via the returned flag (see SwapNewSCreen's handleFlip).
   const flipTokens = useCallback(() => {
-    if (__DEV__)
-      console.log(
-        "[useSwap flipTokens]",
-        sellToken?.symbol,
-        "↔",
-        buyToken?.symbol,
-      );
     setSellToken(buyToken);
     setBuyToken(sellToken);
     setSellAmount(buyAmountEstimate || "");
@@ -413,13 +380,14 @@ export function useSwap() {
     (balance) => {
       if (!balance || !sellToken) return;
       if (sellToken.isNative) {
-        const val = Math.max(0, parseFloat(balance) - 0.002);
+        const reserve = NATIVE_FEE_RESERVE[isSolana ? "solana" : "evm"];
+        const val = Math.max(0, parseFloat(balance) - reserve);
         setSellAmount(val > 0 ? val.toFixed(6) : "0");
       } else {
         setSellAmount(balance);
       }
     },
-    [sellToken],
+    [sellToken, isSolana],
   );
 
   // ── Token search ─────────────────────────────────────────────────────────────
@@ -470,6 +438,18 @@ export function useSwap() {
     };
   }, [priceInfo]);
 
+  /** Cross-chain route details: { eta (s), via, feesUsd } — null otherwise. */
+  const getRouteInfo = useCallback(() => {
+    if (!priceInfo?.crossChain) return null;
+    const fees =
+      (parseFloat(priceInfo.gasCostUsd) || 0) + (parseFloat(priceInfo.feeCostUsd) || 0);
+    return {
+      eta: priceInfo.estimatedDurationSeconds ?? null,
+      via: priceInfo.toolDetails?.name || priceInfo.tool || "LI.FI",
+      feesUsd: fees > 0 ? fees : null,
+    };
+  }, [priceInfo]);
+
   const getSellUsdPrice = useCallback(
     () => sellToken?.usdPrice ?? priceInfo?.sellTokenUsdPrice ?? null,
     [sellToken, priceInfo],
@@ -497,6 +477,7 @@ export function useSwap() {
     setSellToken,
     setBuyToken,
     queueBuyToken,
+    queueSellToken,
     setSellAmount,
     flipTokens,
     setMaxAmount,
@@ -506,12 +487,15 @@ export function useSwap() {
     fetchPrice,
     getExchangeRate,
     getPriceImpact,
+    getRouteInfo,
     getSellUsdPrice,
     getBuyUsdPrice,
     slippage,
     setSlippage,
     tokenList,
+    buyTokenList,
     loadingTokens,
+    loadingBuyTokens,
     searchTokens,
     loadTokens,
     isFetchingPrice,
@@ -519,5 +503,9 @@ export function useSwap() {
     isReadyToSwap,
     error,
     setError,
+    // chain context for callers
+    sellChain: activeChain,
+    buyChain,
+    isCrossChain,
   };
 }

@@ -11,7 +11,10 @@ changing any of the systems below.
 - [Chains](#chains)
 - [Data layer: the cache everything routes through](#data-layer)
 - [Swap and Bridge](#swap-and-bridge)
+- [Advanced Swap](#advanced-swap)
 - [Token management](#token-management)
+- [Cloud backup (Google Drive)](#cloud-backup)
+- [Wallet identity (@username)](#wallet-identity)
 - [Theming](#theming)
 - [Promotional banners](#promotional-banners)
 - [Backend structure](#backend-structure)
@@ -28,7 +31,13 @@ carries `id`, `name`, `symbol`, `nativeTokenName`, `rpcUrl`, `explorer`,
 `icon`, and `testnet`.
 
 **Supported today**: Ethereum, Arc, Robinhood Chain, Polygon, BNB Chain,
-Arbitrum, Avalanche, Base, plus the Base and Ethereum Sepolia testnets.
+Arbitrum, Avalanche, Base, plus the Base and Ethereum Sepolia testnets — and
+Solana, which lives separately in `constants/nonEvmChain.js` (see below).
+
+**Default networks** are `DEFAULT_NETWORK_IDS` in `Chain.js`: Solana, Base,
+Robinhood Chain, Ethereum, in that order. They're what a new wallet starts
+with enabled in its portfolio, what every network picker features first, and
+the order `ChainContext`'s `networks` list is sorted in.
 
 `nativeTokenName` exists separately from `name` because a native asset row
 shows the *token's* name (e.g. "Ethereum", "USDC") with the *chain's* logo —
@@ -42,14 +51,42 @@ day-one support, not guessed. What wasn't verified — a wrapped-native
 contract address for either chain — was left out rather than guessed, since a
 wrong address here means funds sent to the wrong contract.
 
-`DEFAULT_CHAIN` is the one the wallet opens to and treats as primary
-(currently Arc). `ChainContext.js` resolves it, tracks which chains the user
+`DEFAULT_CHAIN` is the EVM chain the wallet opens to and treats as primary
+(currently Base — the first EVM chain in `DEFAULT_NETWORK_IDS`). `ChainContext.js` resolves it, tracks which chains the user
 has enabled for their portfolio (`enabledChainIds`, defaulting to every
 mainnet chain), and exposes `toggleNetwork()` for `NetworkManager.js`'s
 per-chain switches. Changing the primary chain is a one-line change to
 `DEFAULT_CHAIN` — everything downstream (the "Primary" badge in
 `ChainSwitcher.js`, the initial active chain) reads that constant rather than
 hardcoding a chain id.
+
+### Solana
+
+Solana is not in `SUPPORTED_CHAINS`, on purpose: `activeChain` drives the
+dApp browser and ethers signing, so it must always be EVM —
+`ChainContext.switchChain` throws for Solana. Instead its id is the string
+`"SOLANA"`, and `ChainContext` exposes two lists: `chains` (EVM only, safe
+for anything that builds an ethers provider) and `networks` (EVM + Solana,
+for the portfolio, network toggles, Receive, and the swap/bridge pickers).
+Screens that can act on Solana keep their own local chain choice instead of
+switching the global one — `SwapNewSCreen` (`solanaSelected`, plus a
+separate receive chain), `AdvancedSwapScreen` (the pair's chains), and
+`ReceiveScreen` (the picked asset's chain) — and `ChainSwitcher` takes
+`chains`/`selectedChain`/`onSelect` props for that (it's also the picker
+behind `ChainSelectorButton` on Swap, Advanced Swap and Discover).
+
+Each account derives a Solana address from the same mnemonic
+(`m/44'/501'/{index}'/0'`, Phantom-compatible); only the public address is
+stored. `createSolanaSignerForTransaction(pin)` returns a one-time web3.js
+`Keypair`, the Solana twin of `createSignerForTransaction`.
+
+Solana talks to the backend through the same endpoints as EVM, with
+`chainId=SOLANA`. Swap and bridge transactions come back already built as
+base64 versioned transactions (`transaction.chainType === "solana"`);
+`SolanaService.signAndSendSerializedTransaction` signs them as-is — never
+modifying blockhash, fees or instructions — and refuses any whose fee payer
+isn't the user's own address. Confirmation is by polling, not websockets
+(flaky in React Native).
 
 ---
 
@@ -129,8 +166,7 @@ provider, fetch, or the backend throws into `{ title, message, type }` —
 network/timeout, insufficient funds, a rejected signature, rate-limiting, "no
 route found", and so on. `apiClient.js` and the bridge/swap execution paths
 route through it instead of showing `err.message` raw. It's additive — an
-error that's already in that shape (thrown by, say, `useBridge.js`) passes
-through unchanged.
+error that's already in that shape passes through unchanged.
 
 ---
 
@@ -146,23 +182,98 @@ Execution still goes through 0x's own quote — LI.FI is currently
 aggregation-for-pricing only, not a second execution path, to avoid two
 different transaction-signing shapes on one swap.
 
-**Cross-chain bridging** (`hooks/useBridge.js`,
-`screens/swap/BridgeScreen.js`) is LI.FI end to end, replacing what used to
-be a hardcoded Ethereum⇄Mantle OP-stack bridge (`@mantleio/sdk`, a specific
-`L1StandardBridge` contract). One LI.FI `/quote` call covers both an actual
-bridge (same asset, different chain) and a cross-chain swap (different asset
-*and* chain) — `crypto-backend/src/services/lifiService.js` normalizes the
-response into the same `{ transaction, needsApproval, allowanceTarget,
-buyAmount }` shape the 0x flow already used, so the frontend signs both the
-same way. The chain and token pickers are fully dynamic — adding a chain to
-`SUPPORTED_CHAINS` is all it takes for it to show up as a bridge source or
-destination.
+**Solana same-chain swaps** go through Jupiter instead of 0x
+(`crypto-backend/src/services/jupiterService.js`,
+`controllers/solanaSwapController.js`). There's no separate route: the
+existing `/api/swap/{tokens,price,price/best,quote}` handlers dispatch to it
+when `chainId` is Solana, and its responses reuse 0x's field names
+(`buyAmount`, `minBuyAmount`, `estimatedPriceImpact` as a percentage) so
+`useSwap` and the swap screen didn't need a second code path. Two things
+differ: there is never an approval step, and `/quote` returns Jupiter's
+built transaction. Jupiter simulates it while building; if that fails (most
+often: not enough SOL for fees + token-account rent) `/quote` returns a 422
+with the reason rather than a transaction that would only burn a fee.
+`/price/best` doesn't race LI.FI on Solana — LI.FI routes same-chain Solana
+swaps through Jupiter anyway. Native SOL is addressed as the wSOL mint
+(`So111…112`); Jupiter wraps and unwraps automatically.
 
-**Wiring note**: `screens/swap/SwapBridgeScreen.js` is what actually renders
-both the Swap and Bridge tabs — `AppNavigator.js` needs to route to
-`SwapBridgeScreen`, not straight to `SwapNewSCreen`, or the Bridge tab is
-unreachable. Check this hasn't drifted if bridging seems to have disappeared
-from the app; it did once during this project.
+**Cross-chain is the same screen.** There is no Bridge tab: each side of a
+swap has its own chain (the token pickers have chain chips), and
+`hooks/useSwap.js` routes by whether the two chains match — same chain →
+`/swap/*` (0x or Jupiter), different → LI.FI's `/bridge/quote`. One LI.FI
+quote covers both a bridge (same asset) and a cross-chain swap (different
+asset and chain); `crypto-backend/src/services/lifiService.js` normalizes it
+to `{ transaction, needsApproval, allowanceTarget, buyAmount }`, and
+`useSwap` adds `crossChain: true` and 0x's field names (`minBuyAmount`), so
+`components/swap/SwapConfirmModal.js` signs every kind of fill on one path.
+Its success step polls `/bridge/status` for cross-chain fills ("On its way" →
+"Arrived"), which is why the modal stays open on success rather than closing
+itself. Buying a token from its detail page or Markets keeps the user's
+current pay chain and buys on the token's own chain — cross-chain if they
+differ — instead of switching their network. (This replaced a hardcoded
+Ethereum⇄Mantle OP-stack bridge, then a separate LI.FI Bridge tab.)
+
+Solana works in both directions through the same LI.FI flow.
+`bridgeController.js` maps the app's ids to LI.FI's (`"SOLANA"` →
+`1151111081099710`, and native SOL → `11111111111111111111111111111111`,
+LI.FI's address for it — *not* the wSOL mint) and requires an explicit
+`toAddress` in the destination VM's format whenever a route crosses between
+Solana and EVM, since the sender's address can't receive on the other side.
+For Solana-origin routes LI.FI still reports its EVM contract as
+`approvalAddress`; `lifiService.normalizeQuote` drops it, because acting on
+it would mean "approving" an SPL token to an EVM address.
+
+**Signing chain**: the EVM signer (`createSignerForTransaction`) is bound to
+ChainContext's *active* chain. Any screen that pays from an EVM chain must
+`switchChain` to it before confirming — the Swap screen does when you pick
+the pay chain, Advanced Swap does when you tap Buy/Sell.
+
+---
+
+## Advanced Swap
+
+The second tab (`screens/swap/AdvancedSwapScreen.js`): a pair chart, a
+Buy/Sell panel, and market stats. It is not a separate trading engine — the
+order panel drives the same `useSwap` and `SwapConfirmModal` as the Swap
+tab, so cross-chain pairs trade cross-chain automatically.
+
+**Candles for any pair** come from `crypto-backend/src/services/
+pairChartService.js` (`GET /api/market/pair/candles`), on CoinGecko's
+on-chain DEX API (GeckoTerminal data). Each token's USD candles are read
+from its most-traded pool, and a non-USD pair is the bucket-by-bucket ratio
+of the two USD series — so BONK/SOL, or a cross-chain SOL/ETH, works without
+any direct pool for that pair existing. Open/close are exact; the synthetic
+wicks use the quote's close for the bucket, a close approximation. Pools are
+ranked by **24h volume, not liquidity** — reported liquidity is easy to fake
+(one "XTX/SOL" pool claimed $1.6B on $1.6M of daily volume, with almost no
+candles). `quote=usd` charts against dollars without needing a USDC address
+per chain; the screen opens on the active chain's native coin vs USD.
+
+**Stats** (`GET /api/market/onchain/token`): price, market cap, FDV, volume,
+top-pool liquidity, holders and top-10 concentration, 24h trades, and risk
+flags (mint/freeze authority, honeypot, GeckoTerminal score). Native coins
+are looked up through their wrapped token, whose market cap and holders
+describe the *wrapper* — so for natives the coin-level numbers come from
+CoinGecko's coin data instead and holder/risk fields are dropped.
+
+All of it goes through `marketService`'s shared CoinGecko queue and
+stale-on-error cache (exported for this), so it can't push the backend past
+its rate budget. A cold pair costs ~4 upstream calls; after that it's cached
+(candles 1–15 min by timeframe, token data 2 min, holders 30 min). The
+Markets sheet reuses the trending lists — which now include Solana tokens
+(`solana` was added to `PLATFORM_TO_CHAIN`).
+
+**The chart** is TradingView Lightweight Charts
+(`components/market/TVCandleChart.js`) running in a WebView: candles, volume,
+MA7/MA25, pinch-zoom and scroll, crosshair with an OHLC legend. The page it
+loads (`tvChartHtml.js`) pulls the library from a CDN build pinned to an
+exact version, and takes data over `postMessage` — our own candles, so every
+pair the backend can build (relative, cross-chain) charts the same way. A
+`seriesKey` (pair + timeframe) tells it when to jump to the latest bars vs.
+keep the user's scroll/zoom across the 30s refresh. The licence requires
+TradingView attribution; the library's own logo provides it, and its link
+opens in the system browser. If the library can't load (offline, CDN
+blocked, 10s timeout) it falls back to the SVG `CandleChart.js`.
 
 ---
 
@@ -171,11 +282,29 @@ from the app; it did once during this project.
 Every chain's token catalog comes from the backend's `/api/swap/tokens`
 (native + wrapped-native + a curated ERC-20 list per chain, in
 `swapControllers.js`) — the same endpoint Swap, Send, and Manage Tokens all
-read, cached the same way.
+read, cached the same way. Solana's catalog is native SOL plus
+`crypto-backend/src/tokens/solana.json` (SPL tokens).
+
+SPL holdings reach the portfolio differently from ERC-20s: they're read
+straight from the chain (`getSplTokenBalances`, Token and Token-2022), not
+from the on-device `tokens` table, and only mints in that Solana catalog are
+shown. Anyone can airdrop any token to a Solana address, so an unlisted mint
+is treated as spam rather than shown under a name nobody verified. Prices
+are looked up by mint, never by symbol, for the same reason.
+
+Manage Tokens and Receive list **every enabled network** at once through
+`hooks/useMultiChainTokens.js`: catalogs load in parallel and each chain
+renders the moment its own data lands, so a slow chain never blocks the
+rest. Both lists are virtualized (SectionList / FlatList with fixed row
+heights; Receive also pages 30 rows at a time), and Receive fetches no
+balances at all — receiving doesn't need them.
 
 Whether a given token shows up in the *portfolio* is a separate, per-wallet
 concern: `tokens` table in the on-device SQLite database, with an
-`is_visible` column. `utils/TokenDatabase.js`'s `enableToken`/`disableToken`
+`is_visible` column. (Solana can't use that table — it lowercases addresses
+and stores chain ids as integers — so SPL show/hide choices live in
+`utils/splVisibility.js`: held tokens show by default, `hidden` turns one
+off, `enabled` shows one at zero balance.) `utils/TokenDatabase.js`'s `enableToken`/`disableToken`
 write to it (insert-if-missing on enable, since a token from the catalog may
 never have been saved locally before); `usePortfolioAssets.js` reads exactly
 this table via `getTokensByChain`. Flipping a switch in Manage Tokens
@@ -190,6 +319,66 @@ asset list, Manage Tokens, Import Token, and the Swap/Send token pickers, so
 which chain a token belongs to is visible at a glance. It's skipped for
 native/gas tokens, since the whole row's icon already *is* the chain logo
 there.
+
+---
+
+## Cloud backup
+
+Optional, passwordless backup of the recovery phrase
+(`crypto-wallet/services/cloudBackup.js`), offered at Google sign-up
+(WelcomeScreen) and in Settings → Wallet → Cloud Backup.
+
+- **Two stores.** A random 256-bit key in Firestore `backupKeys/{uid}`
+  (owner-only, create-once rules in `crypto-wallet/firestore.rules`) and the
+  AES-256-GCM ciphertext in Drive's hidden `appDataFolder` (scope
+  `drive.appdata` — Rizon can't see the rest of the user's Drive, and the
+  file isn't visible in their Drive UI). Neither alone reveals anything.
+- **Fast because it isn't a password.** The key is 32 random bytes, so
+  there's no KDF to run and nothing to brute-force; encrypt/decrypt are
+  sub-millisecond (native AES-GCM via react-native-quick-crypto). The GCM
+  tag is bound (AAD) to the Firebase uid, so a backup can't be swapped in
+  from another account.
+- **The limit, stated plainly in the UI:** whoever controls the Google
+  account can reach both stores. That's the price of automatic restore.
+- **Restore** happens on Google sign-in: if Drive access was granted and a
+  backup exists, it's decrypted and handed to WalletSetupScreen to import
+  (the user sets a new PIN). If a backup exists but can't be used, sign-up
+  stops instead of silently creating a second wallet.
+- The phrase never goes through navigation params (React Navigation state
+  is persisted to AsyncStorage) — screens hand off via `takeGoogleSession()`,
+  read-once and in memory.
+
+Setup that lives outside the repo: deploy `firestore.rules`, enable Google
+sign-in in Firebase Auth, add the Drive API to the Google Cloud project, and
+create the iOS OAuth client (`GoogleService.js` still has a placeholder).
+
+---
+
+## Wallet identity
+
+A `@username` people can send to, per wallet account
+(`screens/settings/BindingWalletScreen.js`, `services/identity.js`;
+backend `services/identityService.js`, `routes/identityRoutes.js`).
+
+- **Proof, not trust.** The backend issues a one-time challenge (username +
+  both addresses + nonce + 5-minute expiry, single-use); the app signs that
+  exact text with the account's EVM key (EIP-191) *and* its Solana key
+  (ed25519), and the backend verifies both before writing the `identities`
+  row (migration `005`). No email, no password.
+- **Signatures are never saved.** They exist only as locals in the app's
+  `proveAndLink()` and in the request handler; the table has no column for
+  them, and nothing logs or echoes them.
+- **Per account.** The row is username ↔ (EVM address, Solana address) for
+  ONE account. Switching accounts shows that account's own status; linking
+  it is a separate row with its own username. Re-signing with an
+  already-linked account renames it.
+- **Lookups** (`/api/identity/*`, and the legacy `/api/wallets/resolve*` the
+  Send / payment-request screens use, same response shape) read only
+  `identities`. The old `users` table — username + email bound to an EVM
+  address with no proof of ownership — is left in place but no longer
+  consulted, and `POST /api/wallets/bind` returns 410.
+- Challenges are held in memory, so they assume one backend instance; with
+  several, move them to Redis/Postgres (they hold no secrets).
 
 ---
 
@@ -254,6 +443,13 @@ crypto-backend/src/
 ├── tokenLists/       — curated ERC-20 lists per chain, used by swapControllers' getTokenList
 └── tokens/          — the broader per-chain token catalogs tokenParser.js serves via /api/tokens
 ```
+
+Solana has a different id at each layer — `"SOLANA"` in the app, LI.FI's
+`1151111081099710`, and `501000101` in `tokens/solana.json` — and
+`utils/solana.js`'s `isSolanaChainId` accepts all three. Swap tracking stores
+Solana swaps under `501000101` (it fits the `INTEGER` `chain_id` column);
+migration `004` widens the address/hash columns for base58 addresses and
+88-char signatures.
 
 Two Postgres migration paths exist and are **not** interchangeable:
 `scripts/migrate.js` (`npm run migrate:up`/`migrate:down`) runs the real,

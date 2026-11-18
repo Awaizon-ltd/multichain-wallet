@@ -6,6 +6,89 @@ import { withCache, Key, TTL } from "../utils/cache/DataCache";
 import cacheStore from "../utils/cache/CacheStore";
 import coinGeckoService, { getAllNativePrices } from "../services/coingecko";
 import { SUPPORTED_CHAINS } from "../constants/Chain";
+import { NON_EVM_CHAINS } from "../constants/nonEvmChain";
+import { getSplTokenBalances } from "../utils/SolanaService";
+import { getSplPrefs, isSplVisible } from "../utils/splVisibility";
+import { apiGet } from "../services/apiClient";
+import { API_CONFIG } from "../config/api";
+
+const SOLANA = NON_EVM_CHAINS.SOLANA;
+
+/**
+ * SPL holdings for a Solana wallet, as portfolio token assets. Only mints in
+ * the backend's curated Solana catalog (tokens/solana.json) are shown:
+ * anyone can airdrop arbitrary tokens to a Solana address, so an unlisted
+ * mint is treated as spam rather than surfaced with an unverified name.
+ */
+const loadSplAssets = async (solanaAddress) => {
+  const [held, catalog, prefs] = await Promise.all([
+    withCache(
+      Key.knownTokenBalances(solanaAddress, SOLANA.id),
+      TTL.TOKEN_BALANCE,
+      () => getSplTokenBalances(solanaAddress),
+    ),
+    apiGet(API_CONFIG.ENDPOINTS.SWAP_TOKENS, {
+      params: { chainId: SOLANA.id },
+      ttl: TTL.API_TOKEN_CATALOG,
+    }).then((json) => json.data?.tokens ?? []),
+    getSplPrefs(solanaAddress), // Manage Tokens show/hide choices
+  ]);
+
+  const byMint = new Map(
+    catalog.filter((t) => !t.isNative).map((t) => [t.address, t]),
+  );
+
+  // A wallet can hold several accounts for one mint — sum them
+  const totals = new Map();
+  for (const h of held) {
+    if (!byMint.has(h.mint) || !isSplVisible(prefs, h.mint, true)) continue;
+    const prev = totals.get(h.mint);
+    totals.set(h.mint, {
+      amount: (prev ? BigInt(prev.amount) : 0n) + BigInt(h.amount),
+      decimals: h.decimals,
+    });
+  }
+
+  // Switched on in Manage Tokens but not held: show at zero
+  for (const mint of prefs.enabled) {
+    const meta = byMint.get(mint);
+    if (meta && !totals.has(mint) && !prefs.hidden.has(mint)) {
+      totals.set(mint, { amount: 0n, decimals: meta.decimals });
+    }
+  }
+
+  return Promise.all(
+    Array.from(totals, async ([mint, { amount, decimals }]) => {
+      const meta = byMint.get(mint);
+      const balance = formatUnits(amount, decimals);
+      // By mint, never by symbol: SPL symbols are trivially spoofed
+      const tokenPrice = await withTimeout(
+        coinGeckoService.getTokenPrice(mint, SOLANA.id),
+        TOKEN_TIMEOUT,
+        null,
+      );
+      return {
+        _id: `${SOLANA.id}_${mint}`,
+        _isNative: false,
+        chainId: SOLANA.id,
+        chainName: SOLANA.name,
+        chainIcon: SOLANA.icon,
+        symbol: meta.symbol,
+        name: meta.name,
+        logo: meta.logoURI ?? null,
+        address: mint,
+        balance,
+        decimals,
+        price: tokenPrice?.usd ?? null,
+        priceChange24h: tokenPrice?.usd_24h_change ?? null,
+        // null = held but no price: shown as "—", never as $0.00
+        usdValue: tokenPrice?.usd ? parseFloat(balance) * tokenPrice.usd : parseFloat(balance) > 0 ? null : 0,
+        isNative: false,
+        networkType: "solana",
+      };
+    }),
+  );
+};
 
 /**
  * usePortfolioAssets
@@ -14,11 +97,14 @@ import { SUPPORTED_CHAINS } from "../constants/Chain";
  * Merges:
  *   • Native balances for all *enabled* EVM chains (from WalletContext balance cache)
  *   • ERC-20 tokens saved in DB for every enabled EVM chain
+ *   • SOL + held SPL tokens (catalog-listed only), when Solana is enabled
  *
  * Props:
  *   walletAddress   — EVM address string
  *   enabledChainIds — Set<number> from ChainContext (null = loading → show all)
  *   balances        — EVM balances map from useWallet()
+ *   solanaAddress   — Solana address string (null if not derived yet)
+ *   solanaBalance   — SOL balance from useWallet() ({ formatted, ... } | null)
  *   isProduction    — boolean from ChainContext
  *
  * Returns:
@@ -54,6 +140,8 @@ const usePortfolioAssets = ({
   enabledChainIds,
   balances,
   isProduction,
+  solanaAddress,
+  solanaBalance,
 }) => {
   const [nativeAssets, setNativeAssets] = useState([]);
   const [tokenAssets, setTokenAssets] = useState([]);
@@ -72,9 +160,8 @@ const usePortfolioAssets = ({
   // Stable key for enabledChainIds so deps array doesn't churn on Set identity
   const enabledKey = useMemo(() => {
     if (!enabledChainIds) return "all";
-    return Array.from(enabledChainIds)
-      .sort((a, b) => a - b)
-      .join(",");
+    // String sort: ids mix numbers (EVM) and strings ("SOLANA")
+    return Array.from(enabledChainIds, String).sort().join(",");
   }, [enabledChainIds]);
 
   const fetchAssets = useCallback(async () => {
@@ -111,9 +198,11 @@ const usePortfolioAssets = ({
         const bal = balances[chain.id];
         const balanceValue = bal ? parseFloat(bal.formatted ?? "0") : 0;
         const priceData = nativePrices[chain.symbol];
-        const price = priceData?.usd ?? 0;
+        // null when the price didn't load: the row shows "Price unavailable"
+        // instead of a misleading $0.00
+        const price = priceData?.usd ?? null;
         const priceChange24h = priceData?.usd_24h_change ?? null;
-        const usdValue = balanceValue * price;
+        const usdValue = price == null ? (balanceValue > 0 ? null : 0) : balanceValue * price;
 
         return {
           chainId: chain.id,
@@ -137,13 +226,47 @@ const usePortfolioAssets = ({
         };
       });
 
+      // ── 2b. SOL ─────────────────────────────────────────────────────────────
+      const solanaVisible =
+        !!solanaAddress &&
+        (!enabledChainIds || enabledChainIds.has(SOLANA.id));
+
+      const builtSolanaNativeAssets = [];
+      if (solanaVisible) {
+        const balanceValue = parseFloat(solanaBalance?.formatted ?? "0") || 0;
+        const priceData = nativePrices[SOLANA.symbol];
+        const price = priceData?.usd ?? null;
+        builtSolanaNativeAssets.push({
+          chainId: SOLANA.id,
+          chain: SOLANA,
+          symbol: SOLANA.symbol,
+          name: SOLANA.nativeTokenName,
+          chainName: SOLANA.name,
+          logo: SOLANA.icon,
+          balance: balanceValue.toString(),
+          usdValue: price == null ? (balanceValue > 0 ? null : 0) : balanceValue * price,
+          price,
+          priceChange24h: priceData?.usd_24h_change ?? null,
+          isZeroBalance: balanceValue === 0,
+          isTestnet: false,
+          _id: `native-${SOLANA.id}`,
+          _isNative: true,
+          networkType: "solana",
+        });
+      }
+
       // Show native balances right away; tokens fill in below.
-      setNativeAssets(builtEVMNativeAssets);
-      setTotalValue(builtEVMNativeAssets.reduce((s, a) => s + a.usdValue, 0));
+      const firstNative = [...builtEVMNativeAssets, ...builtSolanaNativeAssets];
+      setNativeAssets(firstNative);
+      setTotalValue(firstNative.reduce((s, a) => s + (a.usdValue ?? 0), 0));
       setLoading(false);
       hasDataRef.current = true;
 
-      // ── 3. ERC-20 tokens for enabled EVM chains ──────────────────────────────
+      // ── 3. ERC-20 tokens for enabled EVM chains (+ SPL, in parallel) ────────
+      const splPromise = solanaVisible
+        ? withTimeout(loadSplAssets(solanaAddress), TOKEN_TIMEOUT, [])
+        : Promise.resolve([]);
+
       const evmTokenResults = await Promise.all(
         visibleChains.map(async (chain) => {
           try {
@@ -216,10 +339,8 @@ const usePortfolioAssets = ({
                     dbToken.decimals,
                   );
 
-                  const usdValue =
-                    tokenPrice?.usd && parseFloat(balFormatted) > 0
-                      ? parseFloat(balFormatted) * tokenPrice.usd
-                      : 0;
+                  const held = parseFloat(balFormatted) > 0;
+                  const usdValue = tokenPrice?.usd && held ? parseFloat(balFormatted) * tokenPrice.usd : held ? null : 0;
 
                   return {
                     _id: `${chainId}_${dbToken.address.toLowerCase()}`,
@@ -250,14 +371,22 @@ const usePortfolioAssets = ({
         }),
       );
 
+      const splTokenAssets = await splPromise;
+
       // ── 4. Merge + sort ──────────────────────────────────────────────────────
-      const allNativeAssets = [...builtEVMNativeAssets].sort((a, b) => {
+      const allNativeAssets = [
+        ...builtEVMNativeAssets,
+        ...builtSolanaNativeAssets,
+      ].sort((a, b) => {
         if (a.isZeroBalance && !b.isZeroBalance) return 1;
         if (!a.isZeroBalance && b.isZeroBalance) return -1;
-        return b.usdValue - a.usdValue;
+        return (b.usdValue ?? 0) - (a.usdValue ?? 0);
       });
 
-      const allTokenAssets = [...evmTokenResults.flat().filter(Boolean)].sort((a, b) => {
+      const allTokenAssets = [
+        ...evmTokenResults.flat().filter(Boolean),
+        ...splTokenAssets,
+      ].sort((a, b) => {
         const aHas = parseFloat(a.balance) > 0;
         const bHas = parseFloat(b.balance) > 0;
         if (aHas && !bHas) return -1;
@@ -313,7 +442,7 @@ const usePortfolioAssets = ({
     }
   },
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  [walletAddress, enabledKey, balances, isProduction],
+  [walletAddress, enabledKey, balances, isProduction, solanaAddress, solanaBalance],
   );
 
   fetchAssetsRef.current = fetchAssets;
@@ -353,7 +482,7 @@ const usePortfolioAssets = ({
   useEffect(() => {
     fetchAssets();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [balances]);
+  }, [balances, solanaBalance]);
 
   // Pull-to-refresh: HomeScreen already shows its own RefreshControl spinner
   // for this, so we don't also flip the skeleton back on over existing data.

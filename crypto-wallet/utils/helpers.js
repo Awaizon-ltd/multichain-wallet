@@ -301,6 +301,18 @@ export const formatTimeAgo = (timestamp) => {
 /**
  * Format number with commas
  */
+/**
+ * USD value for display.
+ *   null / undefined → "—"        (price unknown: never pretend it's $0)
+ *   0 < v < 0.01     → "<$0.01"   (tiny but not zero)
+ *   otherwise        → "$1,234.56"
+ */
+export const formatUsdValue = (value) => {
+  if (value === null || value === undefined || Number.isNaN(value)) return "—";
+  if (value > 0 && value < 0.01) return "<$0.01";
+  return `$${new Intl.NumberFormat("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(value)}`;
+};
+
 export const formatNumber = (num, decimals = 2) => {
   const number = parseFloat(num);
   if (isNaN(number)) return '0';

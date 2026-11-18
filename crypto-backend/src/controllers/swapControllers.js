@@ -1,5 +1,7 @@
 // controllers/swapControllers.js
 const axios = require("axios");
+const solanaSwap = require("./solanaSwapController");
+const { isSolanaChainId } = require("../utils/solana");
 
 // ─── Fee Configuration ────────────────────────────────────────────────────────
 const FEE_RECIPIENT =
@@ -242,6 +244,9 @@ const debug = (...args) => {
 };
 
 const getTokens = async (req, res, next) => {
+  // Solana swaps go through Jupiter — same endpoint, same response envelope
+  if (isSolanaChainId(req.query.chainId))
+    return solanaSwap.getTokens(req, res, next);
   try {
     const chainId = parseInt(req.query.chainId ?? 1);
     const { search } = req.query;
@@ -265,6 +270,9 @@ const getTokens = async (req, res, next) => {
 };
 
 const getPrice = async (req, res, next) => {
+  // Solana swaps go through Jupiter — same endpoint, same response envelope
+  if (isSolanaChainId(req.query.chainId))
+    return solanaSwap.getPrice(req, res, next);
   try {
     const {
       sellToken,
@@ -336,6 +344,9 @@ const getPrice = async (req, res, next) => {
 };
 
 const getQuote = async (req, res, next) => {
+  // Solana swaps go through Jupiter — same endpoint, same response envelope
+  if (isSolanaChainId(req.query.chainId))
+    return solanaSwap.getQuote(req, res, next);
   try {
     const {
       sellToken,
@@ -507,6 +518,9 @@ const fetchLifiPrice = async ({
  * same-chain route for an exotic pair) without failing the whole request.
  */
 const getBestPrice = async (req, res, next) => {
+  // Solana swaps go through Jupiter — same endpoint, same response envelope
+  if (isSolanaChainId(req.query.chainId))
+    return solanaSwap.getBestPrice(req, res, next);
   try {
     const {
       sellToken,

@@ -1,0 +1,29 @@
+<!doctype html>
+<html>
+  <head><meta charset="utf-8" /><title>Test dApp</title></head>
+  <body>
+    <h1>Rizon E2E test dApp</h1>
+    <script>
+      window.__eip6963 = [];
+      window.addEventListener("eip6963:announceProvider", (e) => window.__eip6963.push(e.detail));
+      window.dispatchEvent(new Event("eip6963:requestProvider"));
+
+      window.__wallets = [];
+      const api = { register: (w) => { if (!window.__wallets.includes(w)) window.__wallets.push(w); return () => {}; } };
+      window.addEventListener("wallet-standard:register-wallet", (e) => e.detail(api));
+      window.dispatchEvent(new CustomEvent("wallet-standard:app-ready", { detail: api }));
+
+      window.__events = [];
+      window.__run = (name, fn) => {
+        window.__results = window.__results || {};
+        window.__results[name] = { pending: true };
+        Promise.resolve()
+          .then(fn)
+          .then(
+            (v) => (window.__results[name] = { ok: true, value: v }),
+            (e) => (window.__results[name] = { ok: false, code: e && e.code, message: e && e.message }),
+          );
+      };
+    </script>
+  </body>
+</html>

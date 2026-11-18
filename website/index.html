@@ -1,0 +1,366 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Rizon Wallet — your crypto, on desktop and Android</title>
+    <meta name="description" content="Rizon is a self-custody wallet for Ethereum, Base, Arc, Robinhood Chain, Solana and more. Swap, bridge and connect to dApps — with scam protection built in." />
+    <meta name="theme-color" content="#0a0a0a" />
+    <meta property="og:title" content="Rizon Wallet — your crypto, everywhere" />
+    <meta property="og:description" content="Self-custody for Ethereum, Base, Solana and more. On Android and Chrome." />
+    <link rel="canonical" href="https://rizon.awarizon.com/" />
+    <meta property="og:url" content="https://rizon.awarizon.com/" />
+    <meta property="og:image" content="https://rizon.awarizon.com/og.png" />
+    <meta name="twitter:image" content="https://rizon.awarizon.com/og.png" />
+    <meta property="og:type" content="website" />
+    <meta name="twitter:card" content="summary_large_image" />
+    <link rel="icon" type="image/png" href="/favicon.png" />
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@500&display=swap" rel="stylesheet" />
+    <script>
+      // Hide animated elements until motion takes over (no flash). Safety net: if the
+      // app script hasn't run within 2.5s, show everything anyway.
+      if (!matchMedia("(prefers-reduced-motion: reduce)").matches) {
+        document.documentElement.classList.add("motion-pending");
+        setTimeout(function () { if (!window.__rizonReady) document.documentElement.classList.remove("motion-pending"); }, 2500);
+      }
+    </script>
+  </head>
+  <body>
+    <a class="skip" href="#main">Skip to content</a>
+
+    <!-- Fixed 3D scene behind the page (decorative). -->
+    <canvas id="scene" aria-hidden="true"></canvas>
+    <div class="scene-fallback" aria-hidden="true"></div>
+
+    <header class="nav" id="top">
+      <div class="nav-shell">
+        <a class="brand" href="#top" aria-label="Rizon home">
+          <img src="/icon.png" alt="" width="32" height="32" />
+          <span>Rizon</span>
+        </a>
+        <nav aria-label="Primary" class="nav-group">
+          <span class="nav-indicator" aria-hidden="true"></span>
+          <a href="#networks" data-spy="networks">Networks</a>
+          <a href="#features" data-spy="features">Features</a>
+          <a href="#app" data-spy="app">App</a>
+          <a href="#security" data-spy="security">Security</a>
+          <a href="#faq" data-spy="faq">FAQ</a>
+        </nav>
+        <a class="btn btn-primary btn-sm magnetic" href="#download" data-link="chrome">Add to Chrome</a>
+        <span class="nav-progress" aria-hidden="true"></span>
+      </div>
+    </header>
+
+    <main id="main">
+      <div class="stack">
+      <!-- HERO (pinned while "How it works" slides over it) -->
+      <section class="hero stack-under" aria-labelledby="hero-title">
+        <div class="container hero-inner">
+          <div class="hero-copy">
+            <p class="kicker anim-in"><span class="dot" aria-hidden="true"></span>Android &amp; desktop</p>
+            <h1 id="hero-title"><span class="line">Your crypto,</span><span class="line accent">everywhere.</span></h1>
+            <p class="lede anim-in">
+              Rizon is a self-custody wallet for Ethereum, Base, Arc, Robinhood Chain, Solana and more. Swap, bridge and connect to dApps — with scam
+              protection built in.
+            </p>
+            <div class="cta-row anim-in">
+              <a class="play-badge magnetic" href="#download" data-link="mobile" aria-label="Get Rizon on Google Play">
+                <img src="/google-play-badge.png" alt="Get it on Google Play" width="564" height="168" />
+              </a>
+              <a class="btn btn-primary magnetic" href="#download" data-link="chrome">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="4" /><path d="M12 8h8.5M8.5 14 4.2 6.6M15.5 14l-4.3 7.4" /><circle cx="12" cy="12" r="9.5" /></svg>
+                Add to Chrome
+              </a>
+            </div>
+            <ul class="trust anim-in" aria-label="Highlights">
+              <li>Self-custody</li>
+              <li>EVM + Solana</li>
+              <li>Free</li>
+            </ul>
+          </div>
+          <div class="hero-visual" aria-hidden="true"></div>
+        </div>
+        <a class="scroll-cue" href="#how" aria-label="Scroll to how it works">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 9 6 6 6-6" /></svg>
+        </a>
+      </section>
+
+      <!-- HOW IT WORKS — lime, slides over the hero -->
+      <section class="section lime overlay" id="how" aria-labelledby="how-title">
+        <div class="container">
+          <div class="section-head reveal">
+            <p class="kicker">How it works</p>
+            <h2 id="how-title">Self-custody,<br />without the stress.</h2>
+          </div>
+          <ol class="steps stagger">
+            <li class="step">
+              <span class="step-n">01</span>
+              <h3>Create or import</h3>
+              <p>A new wallet in about a minute — or bring your Rizon recovery phrase and see the same accounts instantly.</p>
+            </li>
+            <li class="step">
+              <span class="step-n">02</span>
+              <h3>Fund, swap &amp; bridge</h3>
+              <p>Receive on any network, then swap or bridge across Ethereum, Base, Solana and more in one flow.</p>
+            </li>
+            <li class="step">
+              <span class="step-n">03</span>
+              <h3>Connect anywhere</h3>
+              <p>Use your favourite dApps. Every request opens Rizon's approval screen, with scams called out before you sign.</p>
+            </li>
+          </ol>
+        </div>
+        <div class="ticker" aria-hidden="true">
+          <div class="ticker-track">
+            <span>Ethereum</span><span>Base</span><span>Solana</span><span>Arc</span><span>Robinhood Chain</span><span>Polygon</span><span>BNB Chain</span><span>Arbitrum</span><span>Avalanche</span>
+            <span>Ethereum</span><span>Base</span><span>Solana</span><span>Arc</span><span>Robinhood Chain</span><span>Polygon</span><span>BNB Chain</span><span>Arbitrum</span><span>Avalanche</span>
+          </div>
+        </div>
+      </section>
+    </div>
+
+      <!-- NETWORKS: orbit system -->
+      <section class="networks" id="networks" aria-labelledby="networks-title">
+        <div class="container">
+          <div class="section-head center reveal">
+            <p class="kicker">Networks</p>
+            <h2 id="networks-title">One wallet.<br /><span class="muted">Every network you use.</span></h2>
+          </div>
+          <div class="orbit-visual" aria-hidden="true"></div>
+          <ul class="chain-list stagger">
+            <li><img src="/chains/ethereum.png" alt="" width="24" height="24" />Ethereum</li>
+            <li><img src="/chains/base.png" alt="" width="24" height="24" />Base</li>
+            <li><img src="/chains/arc.webp" alt="" width="24" height="24" />Arc</li>
+            <li><img src="/chains/robinhood.png" alt="" width="24" height="24" />Robinhood Chain</li>
+            <li><img src="/chains/solana.png" alt="" width="24" height="24" />Solana</li>
+            <li><img src="/chains/polygon.png" alt="" width="24" height="24" />Polygon</li>
+            <li><img src="/chains/bnb.png" alt="" width="24" height="24" />BNB Chain</li>
+            <li><img src="/chains/arbitrum.png" alt="" width="24" height="24" />Arbitrum</li>
+            <li><img src="/chains/avalanche.png" alt="" width="24" height="24" />Avalanche</li>
+          </ul>
+        </div>
+      </section>
+
+      <!-- SUPPORT: Ethereum + Solana, 3D logos inside gradient glass cards -->
+      <section class="section support" id="support" aria-labelledby="support-title">
+        <div class="container">
+          <div class="section-head reveal">
+            <p class="kicker">Two ecosystems, one app</p>
+            <h2 id="support-title">Native on Ethereum.<br /><span class="muted">Native on Solana.</span></h2>
+          </div>
+          <!-- Ethereum and Solana orbiting each other (3D, no text). -->
+          <div class="binary-visual" aria-hidden="true"></div>
+          <p class="sr-only">Rizon supports Ethereum with every EVM network, and Solana, from one recovery phrase.</p>
+        </div>
+      </section>
+
+      <div class="stack">
+      <!-- FEATURES: interactive blocks (pinned while the app section slides over) -->
+      <section class="section stack-under" id="features" aria-labelledby="features-title">
+        <div class="container">
+          <div class="section-head split-head">
+            <div class="reveal">
+              <p class="kicker">Features</p>
+              <h2 id="features-title">Everything your wallet should do.<br /><span class="muted">Nothing it shouldn't.</span></h2>
+              <p class="hint">Hover the blocks — or click to scatter them.</p>
+            </div>
+            <div class="blocks-visual" aria-hidden="true"></div>
+          </div>
+          <div class="feature-grid stagger">
+            <article class="glass feature spot" style="--g1: #d6fa1b; --g2: #00c2a8">
+              <span class="icon"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 4 3 8l4 4M3 8h14M17 20l4-4-4-4M21 16H7" /></svg></span>
+              <h3>Swap &amp; bridge</h3>
+              <p>Best-price routes on every network, and cross-chain bridging — even EVM to Solana — in a single transaction.</p>
+            </article>
+            <article class="glass feature spot" style="--g1: #ff6b6b; --g2: #ffb86b">
+              <span class="icon"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3 4 6v6c0 5 3.5 8 8 9 4.5-1 8-4 8-9V6z" /><path d="m9 12 2 2 4-4" /></svg></span>
+              <h3>Scam protection</h3>
+              <p>Look-alike domains, unlimited approvals and wallet-draining signatures are flagged in plain English — before you sign.</p>
+            </article>
+            <article class="glass feature spot" style="--g1: #627eea; --g2: #29b6f6">
+              <span class="icon"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M10 14a5 5 0 0 0 7 0l3-3a5 5 0 0 0-7-7l-1 1M14 10a5 5 0 0 0-7 0l-3 3a5 5 0 0 0 7 7l1-1" /></svg></span>
+              <h3>Connect to any dApp</h3>
+              <p>Works with Ethereum and Solana apps. Sites see only the account you choose, and every request waits for your OK.</p>
+            </article>
+            <article class="glass feature spot" style="--g1: #9945ff; --g2: #14f195">
+              <span class="icon"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="4" /><path d="M16 8v5a3 3 0 0 0 6 0v-1a10 10 0 1 0-4 8" /></svg></span>
+              <h3>Pay @usernames</h3>
+              <p>Claim a name linked to your EVM and Solana addresses. Friends send to @you — no long addresses to copy.</p>
+            </article>
+            <article class="glass feature spot" style="--g1: #f0b90b; --g2: #d6fa1b">
+              <span class="icon"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 19h16M6 15l4-5 4 3 5-7" /></svg></span>
+              <h3>Market &amp; NFTs</h3>
+              <p>Trending tokens, gainers and losers with live charts — and your collectibles, with scam airdrops hidden.</p>
+            </article>
+            <article class="glass feature spot" style="--g1: #00c2a8; --g2: #627eea">
+              <span class="icon"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 18a5 5 0 1 1 1-9.9A6 6 0 0 1 19.5 10 4 4 0 0 1 18 18z" /><path d="M10 14h4M12 12v4" /></svg></span>
+              <h3>Encrypted backup</h3>
+              <p>Optional Google Drive backup, encrypted on your device — and compatible across Android and desktop.</p>
+            </article>
+          </div>
+        </div>
+      </section>
+
+      <!-- MOBILE APP: phone mockups -->
+      <section class="section app overlay dark" id="app" aria-labelledby="app-title">
+        <div class="container app-inner">
+          <div class="app-copy reveal">
+            <p class="kicker">Rizon for Android</p>
+            <h2 id="app-title">Your wallet, in your pocket.</h2>
+            <p class="lede">Trade with live charts, swap across chains and track every asset — then pick up where you left off on desktop with the same recovery phrase.</p>
+            <ul class="app-points stagger">
+              <li><strong>Live trading</strong> — candlestick charts with buy and sell in one screen</li>
+              <li><strong>Cross-chain swaps</strong> — Base, Solana and more, one flow</li>
+              <li><strong>Same accounts everywhere</strong> — or restore from your encrypted Drive backup</li>
+            </ul>
+            <div class="cta-row">
+              <a class="play-badge magnetic" href="#download" data-link="mobile" aria-label="Get Rizon on Google Play">
+                <img src="/google-play-badge.png" alt="Get it on Google Play" width="564" height="168" loading="lazy" />
+              </a>
+            </div>
+          </div>
+          <div class="phones" aria-label="Rizon mobile app screens">
+            <figure class="phone phone-left">
+              <img class="phone-screen" src="/mobile/trade.webp" alt="Rizon trade screen with an ETH/USD candlestick chart" width="591" height="1280" loading="lazy" />
+              <img class="phone-frame" src="/mobile/frame.png" alt="" width="640" height="1280" loading="lazy" />
+            </figure>
+            <figure class="phone phone-center">
+              <img class="phone-screen" src="/mobile/wallet.webp" alt="Rizon wallet home screen with balance, actions and assets" width="591" height="1280" loading="lazy" />
+              <img class="phone-frame" src="/mobile/frame.png" alt="" width="640" height="1280" loading="lazy" />
+            </figure>
+            <figure class="phone phone-right">
+              <img class="phone-screen" src="/mobile/swap.webp" alt="Rizon swap screen" width="591" height="1280" loading="lazy" />
+              <img class="phone-frame" src="/mobile/frame.png" alt="" width="640" height="1280" loading="lazy" />
+            </figure>
+          </div>
+        </div>
+      </section>
+
+      </div>
+
+      <div class="stack">
+      <!-- SHOWCASE (extension) with a voxel wave field behind — pinned under Security -->
+      <section class="section showcase stack-under" aria-labelledby="showcase-title">
+        <div class="container">
+          <div class="section-head reveal">
+            <p class="kicker">Rizon for desktop</p>
+            <h2 id="showcase-title">The same wallet, in your browser.</h2>
+          </div>
+          <div class="tabs" role="tablist" aria-label="Extension screens">
+            <button role="tab" id="tab-portfolio" aria-selected="true" aria-controls="panel-portfolio" data-shot="home">Portfolio</button>
+            <button role="tab" id="tab-swap" aria-selected="false" aria-controls="panel-portfolio" data-shot="swap" tabindex="-1">Swap</button>
+            <button role="tab" id="tab-connect" aria-selected="false" aria-controls="panel-portfolio" data-shot="connect" tabindex="-1">Connect</button>
+            <button role="tab" id="tab-market" aria-selected="false" aria-controls="panel-portfolio" data-shot="coin" tabindex="-1">Market</button>
+          </div>
+          <div class="showcase-stage" id="panel-portfolio" role="tabpanel" aria-labelledby="tab-portfolio">
+            <figure class="device">
+              <img id="showcase-img" src="/screens/home.png" alt="Rizon portfolio screen showing balances across Base and Solana" width="720" height="1200" />
+            </figure>
+            <div class="showcase-copy glass glass-lime">
+              <h3 id="showcase-title-sub">All your assets, one view</h3>
+              <p id="showcase-text">Balances and prices across every network you enable, with your @username front and centre.</p>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- SECURITY -->
+      <section class="section security overlay dark stack-under" id="security" aria-labelledby="security-title">
+        <div class="container">
+          <div class="split">
+            <div class="reveal">
+              <p class="kicker">Security</p>
+              <h2 id="security-title">Your keys never leave your device.</h2>
+              <ul class="checks stagger">
+                <li><strong>Encrypted on device.</strong> Your recovery phrase is sealed with your password (PBKDF2-SHA256 · AES-256-GCM) and auto-locks when you step away.</li>
+                <li><strong>You approve everything.</strong> Every connection, signature and transaction opens Rizon's own approval window.</li>
+                <li><strong>Plain-English warnings.</strong> Permits, unlimited approvals, look-alike domains and failing transactions are called out before you sign.</li>
+                <li><strong>Exact-amount approvals.</strong> Swaps never grant a router unlimited access to your tokens.</li>
+              </ul>
+            </div>
+            <figure class="device device-tilt">
+              <img src="/screens/scam-warning.png" alt="Rizon warning that a look-alike site is requesting an unlimited token permit" width="720" height="1200" loading="lazy" />
+            </figure>
+          </div>
+          <div class="stats stagger">
+            <div class="glass glass-lime stat spot"><strong>600,000</strong><span>PBKDF2 rounds protect your phrase</span></div>
+            <div class="glass glass-eth stat spot"><strong>0</strong><span>servers that ever see your keys</span></div>
+            <div class="glass glass-sol stat spot"><strong>100%</strong><span>of requests need your approval</span></div>
+          </div>
+        </div>
+      </section>
+
+      <!-- FAQ -->
+      <section class="section lime overlay" id="faq" aria-labelledby="faq-title">
+        <div class="container narrow">
+          <div class="section-head reveal">
+            <p class="kicker">FAQ</p>
+            <h2 id="faq-title">Questions, answered.</h2>
+          </div>
+          <div class="faq stagger">
+            <details>
+              <summary>Does Awarizon hold my funds?</summary>
+              <p>No. Rizon is self-custody: your keys are created and encrypted on your device. Nobody — including Awarizon — can move your funds or recover your wallet, so keep your recovery phrase safe.</p>
+            </details>
+            <details>
+              <summary>Which networks are supported?</summary>
+              <p>Ethereum, Base, Arc, Robinhood Chain, Polygon, BNB Chain, Arbitrum, Avalanche and Solana, plus the Base and Ethereum Sepolia testnets.</p>
+            </details>
+            <details>
+              <summary>Can I use the same wallet on Android and desktop?</summary>
+              <p>Yes. Import the same recovery phrase, or restore from your encrypted Google Drive backup, and you'll get the same accounts on both.</p>
+            </details>
+            <details>
+              <summary>Will it conflict with MetaMask or Phantom?</summary>
+              <p>No. Rizon never takes over other wallets — dApps that support modern wallet discovery list Rizon alongside the others, and you pick.</p>
+            </details>
+            <details>
+              <summary>What does it cost?</summary>
+              <p>Rizon is free. You pay normal network fees, and swaps include a small fee shown before you confirm.</p>
+            </details>
+          </div>
+        </div>
+      </section>
+
+      </div>
+
+      <!-- DOWNLOAD: galaxy -->
+      <section class="section download" id="download" aria-labelledby="download-title">
+        <div class="container">
+          <div class="card cta reveal">
+            <img src="/icon.png" alt="" width="72" height="72" class="cta-icon" />
+            <h2 id="download-title">Get Rizon.</h2>
+            <p class="lede">Free on Android, and on Chrome, Edge and Brave.</p>
+            <div class="cta-row center">
+              <a class="play-badge magnetic" data-link="mobile" href="#download" aria-label="Get Rizon on Google Play">
+                <img src="/google-play-badge.png" alt="Get it on Google Play" width="564" height="168" loading="lazy" />
+              </a>
+              <a class="btn btn-primary magnetic" data-link="chrome" href="#download">Add to Chrome</a>
+            </div>
+            <p class="small muted" id="download-note" hidden>Store links are coming soon.</p>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <footer class="footer">
+      <div class="container footer-inner">
+        <a class="brand" href="#top"><img src="/icon.png" alt="" width="24" height="24" /><span>Rizon</span></a>
+        <nav aria-label="Footer">
+          <ul class="footer-links">
+            <li><a href="/privacy/" data-link="privacy">Privacy</a></li>
+            <li><a href="/brand/">Brand</a></li>
+            <li><a href="#faq">FAQ</a></li>
+            <li><a href="https://awarizon.com">Awarizon</a></li>
+          </ul>
+        </nav>
+        <p class="small muted">© <span id="year"></span> <a class="inline-link" href="https://awarizon.com">Awarizon</a>. Rizon is self-custody software; you are responsible for your recovery phrase.</p>
+      </div>
+    </footer>
+
+    <script type="module" src="/src/main.js"></script>
+  </body>
+</html>

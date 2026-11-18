@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from "react";
+import React, { useState, useEffect, useCallback, useMemo } from "react";
 import {
   View,
   Text,
@@ -17,6 +17,15 @@ const prefetchIcons = (chains) => {
   chains.forEach((c) => c.icon && Image.prefetch(c.icon).catch(() => {}));
 };
 
+// Build a header + rows block, or nothing if the list is empty
+const buildSection = (key, title, list) =>
+  list.length > 0
+    ? [
+        { type: "header", title, count: list.length, key: `h-${key}` },
+        ...list.map((c) => ({ type: "chain", chain: c, key: `c-${c.id}` })),
+      ]
+    : [];
+
 // ─── Sub-components ───────────────────────────────────────────────────────────
 
 const ChainIcon = ({ uri, name, size = 36, COLORS }) => {
@@ -26,7 +35,12 @@ const ChainIcon = ({ uri, name, size = 36, COLORS }) => {
       <View
         style={[
           styles.iconFallback,
-          { width: size, height: size, borderRadius: size / 2, backgroundColor: COLORS.primary },
+          {
+            width: size,
+            height: size,
+            borderRadius: size / 2,
+            backgroundColor: COLORS.primary,
+          },
         ]}
       >
         <Text style={[styles.iconFallbackText, { color: COLORS.surface }]}>
@@ -58,14 +72,25 @@ const NetworkRow = React.memo(({ chain, enabled, onToggle, COLORS }) => (
     <ChainIcon uri={chain.icon} name={chain.name} size={36} COLORS={COLORS} />
     <View style={styles.rowInfo}>
       <View style={styles.rowNameRow}>
-        <Text style={[styles.rowName, { color: COLORS.text }]}>{chain.name}</Text>
+        <Text style={[styles.rowName, { color: COLORS.text }]}>
+          {chain.name}
+        </Text>
         {chain.testnet && (
-          <View style={[styles.testnetBadge, { backgroundColor: COLORS.warning + "20" }]}>
-            <Text style={[styles.testnetText, { color: COLORS.warning }]}>TESTNET</Text>
+          <View
+            style={[
+              styles.testnetBadge,
+              { backgroundColor: COLORS.warning + "20" },
+            ]}
+          >
+            <Text style={[styles.testnetText, { color: COLORS.warning }]}>
+              TESTNET
+            </Text>
           </View>
         )}
       </View>
-      <Text style={[styles.rowSymbol, { color: COLORS.textSecondary }]}>{chain.symbol}</Text>
+      <Text style={[styles.rowSymbol, { color: COLORS.textSecondary }]}>
+        {chain.symbol}
+      </Text>
     </View>
     <Switch
       value={enabled}
@@ -79,8 +104,12 @@ const NetworkRow = React.memo(({ chain, enabled, onToggle, COLORS }) => (
 
 const SectionHeader = ({ title, count, COLORS }) => (
   <View style={styles.sectionHeader}>
-    <Text style={[styles.sectionTitle, { color: COLORS.textSecondary }]}>{title}</Text>
-    <Text style={[styles.sectionCount, { color: COLORS.textTertiary }]}>{count}</Text>
+    <Text style={[styles.sectionTitle, { color: COLORS.textSecondary }]}>
+      {title}
+    </Text>
+    <Text style={[styles.sectionCount, { color: COLORS.textTertiary }]}>
+      {count}
+    </Text>
   </View>
 );
 
@@ -88,31 +117,42 @@ const SectionHeader = ({ title, count, COLORS }) => (
 
 const NetworkManager = ({ visible, onClose }) => {
   const { COLORS } = useTheme();
-  const { getAllChains, isNetworkEnabled, toggleNetwork } = useChain();
-  const chains = getAllChains();
+  // getAllNetworks = EVM chains + Solana (getAllChains is EVM only)
+  const { getAllNetworks, isEvmChain, isNetworkEnabled, toggleNetwork } =
+    useChain();
+  const networks = getAllNetworks();
 
   useEffect(() => {
-    if (visible && chains.length > 0) prefetchIcons(chains);
+    if (visible && networks.length > 0) prefetchIcons(networks);
   }, [visible]);
 
-  const mainnetChains = chains.filter((c) => !c.testnet);
-  const testnetChains = chains.filter((c) => c.testnet);
-
-  const listData = [
-    { type: "header", title: "EVM Networks", count: mainnetChains.length, key: "h-main" },
-    ...mainnetChains.map((c) => ({ type: "chain", chain: c, key: `c-${c.id}` })),
-    ...(testnetChains.length > 0
-      ? [
-          { type: "header", title: "Testnet", count: testnetChains.length, key: "h-test" },
-          ...testnetChains.map((c) => ({ type: "chain", chain: c, key: `c-${c.id}` })),
-        ]
-      : []),
-  ];
+  const listData = useMemo(() => {
+    const mainnets = networks.filter((c) => !c.testnet);
+    return [
+      ...buildSection("evm", "EVM Networks", mainnets.filter(isEvmChain)),
+      ...buildSection(
+        "other",
+        "Other Networks",
+        mainnets.filter((c) => !isEvmChain(c)),
+      ),
+      ...buildSection(
+        "test",
+        "Testnet",
+        networks.filter((c) => c.testnet),
+      ),
+    ];
+  }, [networks, isEvmChain]);
 
   const renderItem = useCallback(
     ({ item }) => {
       if (item.type === "header") {
-        return <SectionHeader title={item.title} count={item.count} COLORS={COLORS} />;
+        return (
+          <SectionHeader
+            title={item.title}
+            count={item.count}
+            COLORS={COLORS}
+          />
+        );
       }
       return (
         <NetworkRow
@@ -127,7 +167,12 @@ const NetworkManager = ({ visible, onClose }) => {
   );
 
   return (
-    <Modal visible={visible} transparent animationType="slide" onRequestClose={onClose}>
+    <Modal
+      visible={visible}
+      transparent
+      animationType="slide"
+      onRequestClose={onClose}
+    >
       <TouchableOpacity
         style={styles.overlay}
         activeOpacity={1}
@@ -144,7 +189,9 @@ const NetworkManager = ({ visible, onClose }) => {
           {/* Header */}
           <View style={[styles.header, { borderBottomColor: COLORS.border }]}>
             <View style={{ flex: 1 }}>
-              <Text style={[styles.title, { color: COLORS.text }]}>Networks</Text>
+              <Text style={[styles.title, { color: COLORS.text }]}>
+                Networks
+              </Text>
               <Text style={[styles.subtitle, { color: COLORS.textSecondary }]}>
                 Toggle which networks appear in your portfolio
               </Text>

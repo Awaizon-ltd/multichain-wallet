@@ -11,6 +11,7 @@ import { Ionicons } from "@expo/vector-icons";
 import { useTheme } from "../../contexts/ThemeContext";
 import { SPACING, FONTS } from "../../constants/Theme";
 import { formatPriceChange } from "../../services/coingecko";
+import { formatUsdValue } from "../../utils/helpers";
 import ChainBadge from "../common/ChainBadge";
 
 const formatNumber = (num, decimals = 2) => {
@@ -281,7 +282,7 @@ const TokenAssetCard = ({ asset, onPress, onSend }) => {
           {/* Balance */}
           <View style={styles.right}>
             <Text style={[styles.usdValue, !hasBalance && styles.usdValueZero]}>
-              ${formatNumber(usdValue ?? 0, 2)}
+              {formatUsdValue(usdValue)}
             </Text>
             <Text style={styles.balanceText}>
               {formatNumber(parseFloat(balance ?? "0"), 4)} {symbol}

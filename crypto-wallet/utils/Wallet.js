@@ -31,18 +31,57 @@ export const isValidMnemonic = (mnemonic) => {
 };
 
 /**
+ * EVM derivation versions. Stored per wallet as `evmDerivation` in SecureStore.
+ *
+ *  STANDARD ("bip44") — m/44'/60'/0'/0/{index} with no BIP-39 passphrase.
+ *    Same addresses as MetaMask, Rabby, Trust Wallet, Ledger Live, etc.
+ *    Used for every wallet created from this version on.
+ *
+ *  LEGACY ("rizon-v1") — what Rizon shipped first. It called
+ *    `HDNodeWallet.fromPhrase(mnemonic, path)`, but in ethers v6 the 2nd
+ *    argument is the BIP-39 *passphrase*, so the path string became the
+ *    passphrase and every account was derived at the default m/44'/60'/0'/0/0.
+ *    Existing wallets keep it forever — their funds, @usernames and history
+ *    live at these addresses. Wallets with no `evmDerivation` field are LEGACY.
+ *    Any wallet that supports a BIP-39 passphrase can recover these accounts:
+ *    passphrase "m/44'/60'/0'/0/{index}", path m/44'/60'/0'/0/0.
+ */
+export const EVM_DERIVATION = Object.freeze({
+  STANDARD: "bip44",
+  LEGACY: "rizon-v1",
+});
+
+/** Derivation version of a stored wallet record (missing field → LEGACY). */
+export const getEvmDerivation = (localWallet) =>
+  localWallet?.evmDerivation === EVM_DERIVATION.STANDARD
+    ? EVM_DERIVATION.STANDARD
+    : EVM_DERIVATION.LEGACY;
+
+/**
  * Create account from mnemonic
  * @param {string} mnemonic - Mnemonic phrase
  * @param {number} accountIndex - Account derivation index
+ * @param {string} derivation - EVM_DERIVATION.STANDARD or EVM_DERIVATION.LEGACY (required)
  * @returns {object} Account object with address and private key
  */
-export const createAccountFromMnemonic = (mnemonic, accountIndex = 0) => {
+export const createAccountFromMnemonic = (mnemonic, accountIndex, derivation) => {
   if (!isValidMnemonic(mnemonic)) {
     throw new Error("Invalid mnemonic phrase");
   }
+  if (!Number.isInteger(accountIndex) || accountIndex < 0) {
+    throw new Error("Invalid account index");
+  }
 
   const path = `m/44'/60'/0'/0/${accountIndex}`;
-  const wallet = ethers.HDNodeWallet.fromPhrase(mnemonic, path);
+  let wallet;
+  if (derivation === EVM_DERIVATION.STANDARD) {
+    wallet = ethers.HDNodeWallet.fromPhrase(mnemonic, "", path);
+  } else if (derivation === EVM_DERIVATION.LEGACY) {
+    // Intentionally reproduces the original call: path as passphrase, default path.
+    wallet = ethers.HDNodeWallet.fromPhrase(mnemonic, path, ethers.defaultPath);
+  } else {
+    throw new Error(`Unknown EVM derivation: ${derivation}`);
+  }
 
   return {
     address: wallet.address,
@@ -57,9 +96,10 @@ export const createAccountFromMnemonic = (mnemonic, accountIndex = 0) => {
  * @param {string} mnemonic - Mnemonic phrase
  * @param {number} count - Number of accounts to derive
  * @param {number} startIndex - Starting index (default: 0)
+ * @param {string} derivation - EVM_DERIVATION value (required)
  * @returns {Array} Array of account objects
  */
-export const deriveMultipleAccounts = (mnemonic, count = 5, startIndex = 0) => {
+export const deriveMultipleAccounts = (mnemonic, count, startIndex, derivation) => {
   if (!isValidMnemonic(mnemonic)) {
     throw new Error("Invalid mnemonic phrase");
   }
@@ -68,7 +108,7 @@ export const deriveMultipleAccounts = (mnemonic, count = 5, startIndex = 0) => {
 
   for (let i = 0; i < count; i++) {
     const index = startIndex + i;
-    const account = createAccountFromMnemonic(mnemonic, index);
+    const account = createAccountFromMnemonic(mnemonic, index, derivation);
     accounts.push({
       ...account,
       name: `Account ${index + 1}`,
@@ -154,9 +194,11 @@ export const getAllBalances = async (address) => {
 
   const balances = {};
   // getNativeBalancesMultiChain returns an object keyed by chainId, not an array
-  Object.values(results).forEach(({ chainId, chainName, error, ...balance }) => {
-    balances[chainId] = { ...balance, chainId, chainName };
-  });
+  Object.values(results).forEach(
+    ({ chainId, chainName, error, ...balance }) => {
+      balances[chainId] = { ...balance, chainId, chainName };
+    },
+  );
   return balances;
 };
 

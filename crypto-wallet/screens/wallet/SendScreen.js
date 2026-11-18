@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useCallback } from "react";
+import React, { useState, useEffect, useCallback, useMemo } from "react";
 import {
   View,
   Text,
@@ -12,13 +12,12 @@ import {
   ActivityIndicator,
   Image,
   TextInput,
-  Animated,
+  Clipboard,
 } from "react-native";
 import { useWallet } from "../../contexts/WalletContext";
 import { useChain } from "../../contexts/ChainContext";
 import { useTheme } from "../../contexts/ThemeContext";
 import Button from "../../components/common/Button";
-import Input from "../../components/common/Input";
 import { Feather, Ionicons } from "@expo/vector-icons";
 import QRScanner from "../../components/wallet/QRScanner";
 import ChainSwitcher from "../../components/wallet/ChainSwitcher";
@@ -50,6 +49,13 @@ const API_BASE_URL = API_CONFIG.BASE_URL;
 const RECIPIENT_MODES = [
   { key: "address", label: "Address", icon: "hash" },
   { key: "username", label: "Username", icon: "at-sign" },
+];
+
+const PERCENTS = [
+  { label: "25%", value: 0.25 },
+  { label: "50%", value: 0.5 },
+  { label: "75%", value: 0.75 },
+  { label: "Max", value: 1 },
 ];
 
 const resolveIdentity = async (emailOrUsername) => {
@@ -112,10 +118,8 @@ const mergeTokenLists = (existing, incoming) => {
     incomingMap[t.id] = t;
   });
 
-  // Update existing entries that now have live balances
   const updated = existing.map((t) => incomingMap[t.id] ?? t);
 
-  // Append truly new entries (discovered on-chain, not in DB)
   incoming.forEach((t) => {
     if (!updated.find((e) => e.id === t.id)) updated.push(t);
   });
@@ -129,23 +133,23 @@ const mergeTokenLists = (existing, incoming) => {
 
 const SendScreen = ({ navigation, route }) => {
   const theme = useTheme();
-  const styles = createStyles(theme);
-  const { address, getBalanceForChain, refreshAllBalances } = useWallet();
+  const styles = useMemo(() => createStyles(theme), [theme]);
+  const { address, accounts, getBalanceForChain, refreshAllBalances } =
+    useWallet();
   const { activeChain } = useChain();
   const { token: routeToken, recipient: routeRecipient } = route.params || {};
 
   // ── Token state ────────────────────────────────────────────────────────────
   const [selectedToken, setSelectedToken] = useState(null);
   const [availableTokens, setAvailableTokens] = useState([]);
-  // Two separate loading flags:
-  //   loadingTokens  → true only during Phase 1 (blocks screen render)
-  //   refreshingBalances → true during Phase 2 (background, shows subtle indicator)
+  // loadingTokens → Phase 1 only (blocks render). refreshingBalances → Phase 2.
   const [loadingTokens, setLoadingTokens] = useState(true);
   const [refreshingBalances, setRefreshingBalances] = useState(false);
 
   // ── Recipient state ────────────────────────────────────────────────────────
   const [recipientMode, setRecipientMode] = useState("address");
   const [recipient, setRecipient] = useState(routeRecipient ?? "");
+  const [recipientFocused, setRecipientFocused] = useState(false);
   const [resolvedAddress, setResolvedAddress] = useState(null);
   const [resolving, setResolving] = useState(false);
   const [resolveError, setResolveError] = useState(null);
@@ -163,27 +167,32 @@ const SendScreen = ({ navigation, route }) => {
   const [showChainSwitcher, setShowChainSwitcher] = useState(false);
   const [showTransactionModal, setShowTransactionModal] = useState(false);
 
-  // ── Resolve chip animation ─────────────────────────────────────────────────
-  const resolveChipAnim = useRef(new Animated.Value(0)).current;
-
   // ── Computed ───────────────────────────────────────────────────────────────
   const effectiveRecipient =
     recipientMode === "address" ? recipient : resolvedAddress;
 
+  const addressCheck = useMemo(
+    () =>
+      recipientMode === "address" && recipient
+        ? validateAddress(recipient)
+        : null,
+    [recipient, recipientMode],
+  );
+  const addressValid = !!addressCheck?.isValid;
+
+  // Other accounts in this wallet — quick pick
+  const myOtherAccounts = useMemo(
+    () =>
+      (Array.isArray(accounts) ? accounts : []).filter(
+        (a) => a?.address && a.address.toLowerCase() !== address?.toLowerCase(),
+      ),
+    [accounts, address],
+  );
+
   // ─────────────────────────────────────────────────────────────────────────────
   // Token loading — two-phase to minimise perceived latency
-  //
-  // Phase 1 (synchronous / near-instant):
-  //   • Build native token from WalletContext (no async).
-  //   • Load user-imported tokens from the local SQLite DB (fast local I/O).
-  //   • Render the screen immediately with balance = "0" placeholders for
-  //     imported tokens while Phase 2 runs in the background.
-  //
-  // Phase 2 (background — no spinner blocking the UI):
-  //   • Fetch on-chain balances via getAllTokenBalances (network call).
-  //   • For DB tokens not discovered via logs, call getTokenBalance directly.
-  //   • Merge results into the existing list — tokens already on screen just
-  //     get their balance updated in place.
+  // Phase 1: native token + local DB tokens render immediately.
+  // Phase 2: on-chain balances fetched in background and merged in place.
   // ─────────────────────────────────────────────────────────────────────────────
   const loadTokens = useCallback(async () => {
     if (!address || !activeChain) return;
@@ -195,16 +204,17 @@ const SendScreen = ({ navigation, route }) => {
     const userAddress = address.toLowerCase();
     const normalizedChainId = parseInt(activeChain.id);
 
-    // Local DB only — fast
     const importedTokens = await getTokensByChain(
       userAddress,
       normalizedChainId,
     );
 
-    // Show placeholders with balanceLoading flag so the UI can render a shimmer
-    const phase1Tokens = [nativeToken, ...importedTokens.map((t) => formatDbToken(t, "0", true))];
+    const phase1Tokens = [
+      nativeToken,
+      ...importedTokens.map((t) => formatDbToken(t, "0", true)),
+    ];
     setAvailableTokens(phase1Tokens);
-    setLoadingTokens(false); // ← screen renders here
+    setLoadingTokens(false);
 
     if (!selectedToken && !routeToken) setSelectedToken(nativeToken);
 
@@ -215,7 +225,6 @@ const SendScreen = ({ navigation, route }) => {
         getAllTokenBalances(address, activeChain),
       ]);
 
-      // Index for O(1) lookup
       const discoveredMap = {};
       discoveredTokens.forEach((t) => {
         discoveredMap[t.address.toLowerCase()] = t;
@@ -226,7 +235,6 @@ const SendScreen = ({ navigation, route }) => {
         dbMap[t.address.toLowerCase()] = t;
       });
 
-      // Shape discovered tokens (enriched with DB metadata where available)
       const discoveredFormatted = discoveredTokens.map((token) =>
         formatDiscoveredToken(
           token,
@@ -234,7 +242,6 @@ const SendScreen = ({ navigation, route }) => {
         ),
       );
 
-      // For DB tokens not found via logs — fetch balance directly (parallel)
       const missingDbTokens = importedTokens.filter(
         (t) => !discoveredMap[t.address.toLowerCase()],
       );
@@ -249,19 +256,16 @@ const SendScreen = ({ navigation, route }) => {
             );
             return formatDbToken(dbToken, bal.formatted, false);
           } catch {
-            // Unresponsive contract on this chain — show zero balance
             return formatDbToken(dbToken, "0", false);
           }
         }),
       );
 
-      // Merge everything and update state once
       setAvailableTokens((prev) =>
         mergeTokenLists(prev, [...discoveredFormatted, ...directResults]),
       );
     } catch (error) {
       console.error("[SendScreen] Background balance refresh failed:", error);
-      // Don't alert — Phase 1 tokens are still usable; just clear loading flags
       setAvailableTokens((prev) =>
         prev.map((t) => ({ ...t, balanceLoading: false })),
       );
@@ -282,16 +286,10 @@ const SendScreen = ({ navigation, route }) => {
   useEffect(() => {
     if (recipientMode === "address") return;
 
-    if (!recipient.trim()) {
-      setResolvedAddress(null);
-      setResolveError(null);
-      animateResolveChip(false);
-      return;
-    }
-
     setResolvedAddress(null);
     setResolveError(null);
-    animateResolveChip(false);
+
+    if (!recipient.trim()) return;
 
     const timer = setTimeout(() => doResolve(recipient.trim()), 600);
     return () => clearTimeout(timer);
@@ -308,15 +306,6 @@ const SendScreen = ({ navigation, route }) => {
   }, [effectiveRecipient, amount, selectedToken]);
 
   // ── Helpers ───────────────────────────────────────────────────────────────
-  const animateResolveChip = (show) => {
-    Animated.spring(resolveChipAnim, {
-      toValue: show ? 1 : 0,
-      useNativeDriver: true,
-      tension: 60,
-      friction: 10,
-    }).start();
-  };
-
   const doResolve = async (query) => {
     try {
       setResolving(true);
@@ -324,7 +313,6 @@ const SendScreen = ({ navigation, route }) => {
       const addr = result.data?.wallet_address;
       setResolvedAddress(addr);
       setResolveError(null);
-      animateResolveChip(true);
     } catch (err) {
       setResolvedAddress(null);
       setResolveError(
@@ -332,20 +320,41 @@ const SendScreen = ({ navigation, route }) => {
           ? `No wallet found for "${query}"`
           : "Could not resolve identity. Try again.",
       );
-      animateResolveChip(false);
     } finally {
       setResolving(false);
     }
   };
 
   const switchMode = (mode) => {
+    if (mode === recipientMode) return;
     setRecipientMode(mode);
     setRecipient("");
     setResolvedAddress(null);
     setResolveError(null);
-    animateResolveChip(false);
     setGasEstimate(null);
     setErrors((prev) => ({ ...prev, recipient: null }));
+  };
+
+  const handleRecipientChange = (text) => {
+    // Addresses never contain whitespace, so strip it (handles pasted newlines)
+    setRecipient(
+      recipientMode === "address" ? text.replace(/\s/g, "") : text.trimStart(),
+    );
+    if (errors.recipient) setErrors((prev) => ({ ...prev, recipient: null }));
+  };
+
+  const handlePaste = async () => {
+    try {
+      const text = await Clipboard.getString();
+      if (text) handleRecipientChange(text.trim());
+    } catch (e) {}
+  };
+
+  const clearRecipient = () => {
+    setRecipient("");
+    setResolvedAddress(null);
+    setResolveError(null);
+    setGasEstimate(null);
   };
 
   const estimateGas = async () => {
@@ -462,6 +471,14 @@ const SendScreen = ({ navigation, route }) => {
     }
   };
 
+  const setPercent = (p) => {
+    if (!selectedToken) return;
+    if (p === 1) return setMaxAmount();
+    const v = parseFloat(selectedToken.balance) * p;
+    if (!isFinite(v)) return;
+    setAmount(v.toFixed(6).replace(/\.?0+$/, "") || "0");
+  };
+
   const handleSelectToken = (token) => {
     setSelectedToken(token);
     setAmount("");
@@ -471,7 +488,7 @@ const SendScreen = ({ navigation, route }) => {
 
   const handleQRScan = (scannedAddress) => {
     setRecipientMode("address");
-    setRecipient(scannedAddress);
+    setRecipient(scannedAddress.replace(/\s/g, ""));
     setShowQRScanner(false);
   };
 
@@ -518,7 +535,36 @@ const SendScreen = ({ navigation, route }) => {
     !errors.gas &&
     !estimatingGas &&
     !resolving &&
-    (recipientMode !== "username" || !!resolvedAddress);
+    (recipientMode !== "username" || !!resolvedAddress) &&
+    (recipientMode !== "address" || addressValid);
+
+  // ── Recipient field state ─────────────────────────────────────────────────
+  const recipientState = (() => {
+    if (recipientMode === "address") {
+      if (!recipient) return { kind: "empty" };
+      if (addressValid) return { kind: "valid" };
+      if (!recipientFocused || errors.recipient)
+        return {
+          kind: "invalid",
+          message:
+            errors.recipient || addressCheck?.errors?.[0] || "Invalid address",
+        };
+      return { kind: "typing" };
+    }
+    if (!recipient.trim()) return { kind: "empty" };
+    if (resolving) return { kind: "resolving" };
+    if (resolvedAddress) return { kind: "valid" };
+    if (resolveError || errors.recipient)
+      return { kind: "invalid", message: resolveError || errors.recipient };
+    return { kind: "typing" };
+  })();
+
+  const boxStyle = [
+    styles.recipientBox,
+    recipientFocused && styles.recipientBoxFocused,
+    recipientState.kind === "valid" && styles.recipientBoxValid,
+    recipientState.kind === "invalid" && styles.recipientBoxInvalid,
+  ];
 
   // ── Render helpers ─────────────────────────────────────────────────────────
 
@@ -542,7 +588,7 @@ const SendScreen = ({ navigation, route }) => {
             ) : (
               <View
                 style={[
-                  styles.tokenIcon,
+                  styles.tokenIconLg,
                   item.isNative && styles.tokenIconNative,
                 ]}
               >
@@ -637,12 +683,22 @@ const SendScreen = ({ navigation, route }) => {
             activeOpacity={0.7}
           >
             {refreshingBalances && (
-              <ActivityIndicator size="small" color={theme.COLORS.textSecondary} />
+              <ActivityIndicator
+                size="small"
+                color={theme.COLORS.textSecondary}
+              />
             )}
             {activeChain.icon && (
-              <Image source={{ uri: activeChain.icon }} style={styles.networkIcon} />
+              <Image
+                source={{ uri: activeChain.icon }}
+                style={styles.networkIcon}
+              />
             )}
-            <Feather name="chevron-down" size={12} color={theme.COLORS.textSecondary} />
+            <Feather
+              name="chevron-down"
+              size={12}
+              color={theme.COLORS.textSecondary}
+            />
           </TouchableOpacity>
         </View>
 
@@ -667,15 +723,217 @@ const SendScreen = ({ navigation, route }) => {
 
         {availableTokens.length > 0 && (
           <>
-            {/* ── Hero: amount + token ── */}
+            {/* ── To: recipient ── */}
+            <View style={styles.card}>
+              <View style={styles.cardHeaderRow}>
+                <Text style={styles.cardTitle}>To</Text>
+                <View style={styles.modeToggle}>
+                  {RECIPIENT_MODES.map((mode) => {
+                    const active = recipientMode === mode.key;
+                    return (
+                      <TouchableOpacity
+                        key={mode.key}
+                        style={[
+                          styles.modePill,
+                          active && styles.modePillActive,
+                        ]}
+                        onPress={() => switchMode(mode.key)}
+                        activeOpacity={0.75}
+                      >
+                        <Feather
+                          name={mode.icon}
+                          size={11}
+                          color={active ? "#000" : theme.COLORS.textSecondary}
+                        />
+                        <Text
+                          style={[
+                            styles.modePillLabel,
+                            {
+                              color: active
+                                ? "#000"
+                                : theme.COLORS.textSecondary,
+                            },
+                          ]}
+                        >
+                          {mode.label}
+                        </Text>
+                      </TouchableOpacity>
+                    );
+                  })}
+                </View>
+              </View>
+
+              <View style={boxStyle}>
+                <TextInput
+                  value={recipient}
+                  onChangeText={handleRecipientChange}
+                  onFocus={() => setRecipientFocused(true)}
+                  onBlur={() => setRecipientFocused(false)}
+                  placeholder={recipientMode === "address" ? "0x…" : "username"}
+                  placeholderTextColor={theme.COLORS.textTertiary}
+                  autoCapitalize="none"
+                  autoCorrect={false}
+                  spellCheck={false}
+                  multiline={recipientMode === "address"}
+                  style={[
+                    styles.recipientInput,
+                    recipientMode === "address" && styles.recipientInputMono,
+                  ]}
+                />
+
+                <View style={styles.recipientFooter}>
+                  {/* Status */}
+                  <View style={styles.statusWrap}>
+                    {recipientState.kind === "valid" && (
+                      <>
+                        <Ionicons
+                          name="checkmark-circle"
+                          size={15}
+                          color={theme.COLORS.success}
+                        />
+                        <Text
+                          style={[
+                            styles.statusText,
+                            { color: theme.COLORS.success },
+                          ]}
+                          numberOfLines={1}
+                        >
+                          {recipientMode === "address"
+                            ? "Valid address"
+                            : `Resolves to ${formatAddress(resolvedAddress || "", 10)}`}
+                        </Text>
+                      </>
+                    )}
+                    {recipientState.kind === "invalid" && (
+                      <>
+                        <Ionicons
+                          name="alert-circle"
+                          size={15}
+                          color={theme.COLORS.error}
+                        />
+                        <Text
+                          style={[
+                            styles.statusText,
+                            { color: theme.COLORS.error },
+                          ]}
+                          numberOfLines={2}
+                        >
+                          {recipientState.message}
+                        </Text>
+                      </>
+                    )}
+                    {recipientState.kind === "resolving" && (
+                      <>
+                        <ActivityIndicator
+                          size="small"
+                          color={theme.COLORS.primary}
+                        />
+                        <Text style={styles.statusText}>Looking up…</Text>
+                      </>
+                    )}
+                    {(recipientState.kind === "empty" ||
+                      recipientState.kind === "typing") && (
+                      <Text style={styles.statusText}>
+                        {recipientMode === "address"
+                          ? "Paste or scan a wallet address"
+                          : "Enter a username"}
+                      </Text>
+                    )}
+                  </View>
+
+                  {/* Actions */}
+                  <View style={styles.actionsWrap}>
+                    {recipient ? (
+                      <TouchableOpacity
+                        style={styles.iconBtn}
+                        onPress={clearRecipient}
+                        hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                      >
+                        <Ionicons
+                          name="close"
+                          size={16}
+                          color={theme.COLORS.text}
+                        />
+                      </TouchableOpacity>
+                    ) : (
+                      <>
+                        <TouchableOpacity
+                          style={styles.actionPill}
+                          onPress={handlePaste}
+                          activeOpacity={0.75}
+                        >
+                          <Ionicons
+                            name="clipboard-outline"
+                            size={14}
+                            color={theme.COLORS.primary}
+                          />
+                          <Text style={styles.actionPillText}>Paste</Text>
+                        </TouchableOpacity>
+                        {recipientMode === "address" && (
+                          <TouchableOpacity
+                            style={styles.iconBtn}
+                            onPress={() => setShowQRScanner(true)}
+                            activeOpacity={0.75}
+                          >
+                            <Ionicons
+                              name="scan-outline"
+                              size={17}
+                              color={theme.COLORS.primary}
+                            />
+                          </TouchableOpacity>
+                        )}
+                      </>
+                    )}
+                  </View>
+                </View>
+              </View>
+
+              {/* My accounts quick pick */}
+              {recipientMode === "address" &&
+                !recipient &&
+                myOtherAccounts.length > 0 && (
+                  <View style={styles.myAccounts}>
+                    <Text style={styles.myAccountsLabel}>My accounts</Text>
+                    <ScrollView
+                      horizontal
+                      showsHorizontalScrollIndicator={false}
+                      keyboardShouldPersistTaps="handled"
+                      contentContainerStyle={styles.myAccountsRow}
+                    >
+                      {myOtherAccounts.map((acc) => (
+                        <TouchableOpacity
+                          key={acc.address}
+                          style={styles.accountChip}
+                          onPress={() => handleRecipientChange(acc.address)}
+                          activeOpacity={0.75}
+                        >
+                          <View style={styles.accountChipAvatar}>
+                            <Text style={styles.accountChipAvatarText}>
+                              {(acc.name || "A").trim().charAt(0).toUpperCase()}
+                            </Text>
+                          </View>
+                          <Text
+                            style={styles.accountChipText}
+                            numberOfLines={1}
+                          >
+                            {acc.name || formatAddress(acc.address, 6)}
+                          </Text>
+                        </TouchableOpacity>
+                      ))}
+                    </ScrollView>
+                  </View>
+                )}
+            </View>
+
+            {/* ── Amount ── */}
             <View style={styles.heroCard}>
               <View style={styles.heroTopRow}>
-                <Text style={styles.heroLabel}>You're sending</Text>
-                <TouchableOpacity onPress={setMaxAmount} disabled={!selectedToken}>
-                  <View style={styles.maxChip}>
-                    <Text style={styles.maxChipText}>MAX</Text>
-                  </View>
-                </TouchableOpacity>
+                <Text style={styles.cardTitle}>Amount</Text>
+                <Text style={styles.heroBalanceHint}>
+                  {selectedToken
+                    ? `Balance ${parseFloat(selectedToken.balance).toFixed(4)} ${selectedToken.symbol}`
+                    : "Select a token"}
+                </Text>
               </View>
 
               <View style={styles.heroAmountRow}>
@@ -731,11 +989,19 @@ const SendScreen = ({ navigation, route }) => {
                 </TouchableOpacity>
               </View>
 
-              <Text style={styles.heroBalanceHint}>
-                {selectedToken
-                  ? `${parseFloat(selectedToken.balance).toFixed(4)} ${selectedToken.symbol} available`
-                  : "Select a token to see your balance"}
-              </Text>
+              <View style={styles.percentRow}>
+                {PERCENTS.map((p) => (
+                  <TouchableOpacity
+                    key={p.label}
+                    style={styles.percentChip}
+                    onPress={() => setPercent(p.value)}
+                    disabled={!selectedToken}
+                    activeOpacity={0.75}
+                  >
+                    <Text style={styles.percentChipText}>{p.label}</Text>
+                  </TouchableOpacity>
+                ))}
+              </View>
 
               {(errors.token || errors.amount) && (
                 <Text style={styles.heroErrorText}>
@@ -744,122 +1010,20 @@ const SendScreen = ({ navigation, route }) => {
               )}
             </View>
 
-            {/* ── Recipient ── */}
+            {/* ── Review ── */}
             <View style={styles.card}>
-              <View style={styles.cardHeaderRow}>
-                <View style={styles.modeToggle}>
-                  {RECIPIENT_MODES.map((mode) => {
-                    const active = recipientMode === mode.key;
-                    return (
-                      <TouchableOpacity
-                        key={mode.key}
-                        style={[styles.modePill, active && styles.modePillActive]}
-                        onPress={() => switchMode(mode.key)}
-                        activeOpacity={0.75}
-                      >
-                        <Feather
-                          name={mode.icon}
-                          size={11}
-                          color={
-                            active ? theme.COLORS.background : theme.COLORS.textSecondary
-                          }
-                        />
-                        <Text
-                          style={[
-                            styles.modePillLabel,
-                            {
-                              color: active
-                                ? theme.COLORS.background
-                                : theme.COLORS.textSecondary,
-                            },
-                          ]}
-                        >
-                          {mode.label}
-                        </Text>
-                      </TouchableOpacity>
-                    );
-                  })}
-                </View>
-              </View>
-
-              <Input
-                value={recipient}
-                onChangeText={(text) => {
-                  setRecipient(text);
-                  if (errors.recipient)
-                    setErrors((prev) => ({ ...prev, recipient: null }));
-                }}
-                placeholder={
-                  recipientMode === "address" ? "0x... or ENS name" : "@username"
-                }
-                error={errors.recipient || resolveError}
-                autoCapitalize="none"
-                style={styles.recipientInputContainer}
-                rightIcon={
-                  recipientMode === "address" ? (
-                    <TouchableOpacity onPress={() => setShowQRScanner(true)}>
-                      <Ionicons
-                        name="scan-outline"
-                        size={18}
-                        color={theme.COLORS.primary}
-                      />
-                    </TouchableOpacity>
-                  ) : resolving ? (
-                    <ActivityIndicator size="small" color={theme.COLORS.primary} />
-                  ) : undefined
-                }
-              />
-
-              {/* Resolved address chip */}
-              {resolvedAddress && recipientMode !== "address" && (
-                <Animated.View
-                  style={[
-                    styles.resolvedChip,
-                    {
-                      opacity: resolveChipAnim,
-                      transform: [
-                        {
-                          translateY: resolveChipAnim.interpolate({
-                            inputRange: [0, 1],
-                            outputRange: [6, 0],
-                          }),
-                        },
-                      ],
-                    },
-                  ]}
-                >
-                  <View style={styles.resolvedChipDot} />
-                  <Text style={styles.resolvedChipLabel}>Resolves to</Text>
-                  <Text style={styles.resolvedChipAddress}>
-                    {formatAddress(resolvedAddress, 12)}
-                  </Text>
-                  <TouchableOpacity
-                    onPress={() => {
-                      setRecipient("");
-                      setResolvedAddress(null);
-                      animateResolveChip(false);
-                    }}
-                    hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
-                  >
-                    <Feather
-                      name="x"
-                      size={13}
-                      color={theme.COLORS.textSecondary}
-                    />
-                  </TouchableOpacity>
-                </Animated.View>
-              )}
-            </View>
-
-            {/* ── Review (fee + total, one unified card) ── */}
-            <View style={styles.card}>
-              <Text style={styles.cardTitle}>Review</Text>
+              <Text style={[styles.cardTitle, { marginBottom: 12 }]}>
+                Review
+              </Text>
 
               <View style={styles.reviewRow}>
                 <Text style={styles.reviewLabel}>Network</Text>
                 <View style={styles.reviewNetworkValue}>
                   {activeChain.icon && (
-                    <Image source={{ uri: activeChain.icon }} style={styles.reviewNetworkIcon} />
+                    <Image
+                      source={{ uri: activeChain.icon }}
+                      style={styles.reviewNetworkIcon}
+                    />
                   )}
                   <Text style={styles.reviewValue}>{activeChain.name}</Text>
                 </View>
@@ -871,14 +1035,20 @@ const SendScreen = ({ navigation, route }) => {
                 <Text style={styles.reviewLabel}>Network fee</Text>
                 {estimatingGas ? (
                   <View style={styles.reviewFeeLoading}>
-                    <ActivityIndicator size="small" color={theme.COLORS.primary} />
-                    <Text style={styles.reviewFeeLoadingText}>Estimating...</Text>
+                    <ActivityIndicator
+                      size="small"
+                      color={theme.COLORS.primary}
+                    />
+                    <Text style={styles.reviewFeeLoadingText}>
+                      Estimating...
+                    </Text>
                   </View>
                 ) : errors.gas ? (
                   <Text style={styles.reviewError}>Unable to estimate</Text>
                 ) : gasEstimate ? (
                   <Text style={styles.reviewValue}>
-                    {parseFloat(gasEstimate.totalCost).toFixed(6)} {activeChain.symbol}
+                    {parseFloat(gasEstimate.totalCost).toFixed(6)}{" "}
+                    {activeChain.symbol}
                   </Text>
                 ) : (
                   <Text style={styles.reviewValuePending}>—</Text>
@@ -896,7 +1066,9 @@ const SendScreen = ({ navigation, route }) => {
                     <Text style={styles.reviewLabelTotal}>Total</Text>
                     {selectedToken?.isNative ? (
                       <Text style={styles.reviewValueTotal}>
-                        {(parseFloat(amount) + parseFloat(gasEstimate.totalCost)).toFixed(6)}{" "}
+                        {(
+                          parseFloat(amount) + parseFloat(gasEstimate.totalCost)
+                        ).toFixed(6)}{" "}
                         {activeChain.symbol}
                       </Text>
                     ) : (
@@ -905,7 +1077,8 @@ const SendScreen = ({ navigation, route }) => {
                           {amount} {selectedToken.symbol}
                         </Text>
                         <Text style={styles.reviewValueSecondary}>
-                          + {parseFloat(gasEstimate.totalCost).toFixed(6)} {activeChain.symbol} fee
+                          + {parseFloat(gasEstimate.totalCost).toFixed(6)}{" "}
+                          {activeChain.symbol} fee
                         </Text>
                       </View>
                     )}
@@ -913,18 +1086,22 @@ const SendScreen = ({ navigation, route }) => {
                 </>
               )}
             </View>
-
-            <Button
-              title={estimatingGas ? "Estimating..." : "Review & Send"}
-              onPress={handleSend}
-              loading={loading || estimatingGas}
-              disabled={!canSubmit}
-              fullWidth
-              style={styles.submitButton}
-            />
           </>
         )}
       </ScrollView>
+
+      {/* ── Pinned send button ── */}
+      {availableTokens.length > 0 && (
+        <View style={styles.footer}>
+          <Button
+            title={estimatingGas ? "Estimating..." : "Review & Send"}
+            onPress={handleSend}
+            loading={loading || estimatingGas}
+            disabled={!canSubmit}
+            fullWidth
+          />
+        </View>
+      )}
 
       {/* ── Token Selector Modal ── */}
       <Modal
@@ -1008,24 +1185,24 @@ const createStyles = (theme) =>
       flexDirection: "row",
       alignItems: "center",
       justifyContent: "space-between",
-      marginBottom: 20,
+      marginBottom: 18,
     },
     backButton: {
-      width: 36,
-      height: 36,
-      borderRadius: 18,
+      width: 38,
+      height: 38,
+      borderRadius: 19,
       backgroundColor: theme.COLORS.surface,
       justifyContent: "center",
       alignItems: "center",
     },
-    headerTitle: { fontSize: 17, fontWeight: "700", color: theme.COLORS.text },
+    headerTitle: { fontSize: 18, fontWeight: "800", color: theme.COLORS.text },
     networkPill: {
       flexDirection: "row",
       alignItems: "center",
       backgroundColor: theme.COLORS.surface,
-      paddingVertical: 6,
-      paddingHorizontal: 10,
-      borderRadius: 16,
+      paddingVertical: 7,
+      paddingHorizontal: 12,
+      borderRadius: 18,
       gap: 6,
     },
     networkIcon: { width: 18, height: 18, borderRadius: 9 },
@@ -1049,31 +1226,174 @@ const createStyles = (theme) =>
     },
     emptyButton: { marginTop: 8 },
 
-    // ── Hero card ──
+    // ── Generic card ──
+    card: {
+      backgroundColor: theme.COLORS.surface,
+      borderRadius: 22,
+      padding: 16,
+      marginBottom: 12,
+    },
+    cardHeaderRow: {
+      flexDirection: "row",
+      alignItems: "center",
+      justifyContent: "space-between",
+      marginBottom: 12,
+    },
+    cardTitle: {
+      fontSize: 13,
+      fontWeight: "700",
+      color: theme.COLORS.textSecondary,
+    },
+
+    modeToggle: {
+      flexDirection: "row",
+      backgroundColor: theme.COLORS.background,
+      borderRadius: 12,
+      padding: 3,
+      gap: 3,
+    },
+    modePill: {
+      flexDirection: "row",
+      alignItems: "center",
+      justifyContent: "center",
+      gap: 5,
+      paddingVertical: 6,
+      paddingHorizontal: 12,
+      borderRadius: 9,
+    },
+    modePillActive: { backgroundColor: theme.COLORS.primary },
+    modePillLabel: { fontSize: 12, fontWeight: "700" },
+
+    // ── Recipient field ──
+    recipientBox: {
+      borderRadius: 16,
+      borderWidth: 1.5,
+      borderColor: theme.COLORS.border,
+      backgroundColor: theme.COLORS.background,
+      paddingHorizontal: 14,
+      paddingTop: 12,
+      paddingBottom: 10,
+    },
+    recipientBoxFocused: { borderColor: theme.COLORS.primary },
+    recipientBoxValid: { borderColor: theme.COLORS.success },
+    recipientBoxInvalid: { borderColor: theme.COLORS.error },
+    recipientInput: {
+      fontSize: 16,
+      fontWeight: "600",
+      color: theme.COLORS.text,
+      padding: 0,
+      minHeight: 24,
+      maxHeight: 64,
+      textAlignVertical: "top",
+    },
+    recipientInputMono: {
+      fontSize: 14,
+      lineHeight: 21,
+      fontFamily: Platform.OS === "ios" ? "Menlo" : "monospace",
+    },
+    recipientFooter: {
+      flexDirection: "row",
+      alignItems: "center",
+      justifyContent: "space-between",
+      gap: 10,
+      marginTop: 10,
+    },
+    statusWrap: {
+      flex: 1,
+      flexDirection: "row",
+      alignItems: "center",
+      gap: 6,
+    },
+    statusText: {
+      flexShrink: 1,
+      fontSize: 12,
+      fontWeight: "600",
+      color: theme.COLORS.textSecondary,
+    },
+    actionsWrap: { flexDirection: "row", alignItems: "center", gap: 8 },
+    actionPill: {
+      flexDirection: "row",
+      alignItems: "center",
+      gap: 5,
+      paddingHorizontal: 12,
+      height: 32,
+      borderRadius: 16,
+      backgroundColor: theme.COLORS.primary + "1F",
+    },
+    actionPillText: {
+      fontSize: 12,
+      fontWeight: "700",
+      color: theme.COLORS.primary,
+    },
+    iconBtn: {
+      width: 32,
+      height: 32,
+      borderRadius: 16,
+      alignItems: "center",
+      justifyContent: "center",
+      backgroundColor: theme.COLORS.primary + "1F",
+    },
+
+    // My accounts
+    myAccounts: { marginTop: 14 },
+    myAccountsLabel: {
+      fontSize: 12,
+      fontWeight: "700",
+      color: theme.COLORS.textSecondary,
+      marginBottom: 8,
+    },
+    myAccountsRow: { gap: 8 },
+    accountChip: {
+      flexDirection: "row",
+      alignItems: "center",
+      gap: 8,
+      paddingVertical: 6,
+      paddingLeft: 6,
+      paddingRight: 12,
+      borderRadius: 18,
+      backgroundColor: theme.COLORS.background,
+      borderWidth: 1,
+      borderColor: theme.COLORS.border,
+      maxWidth: 160,
+    },
+    accountChipAvatar: {
+      width: 24,
+      height: 24,
+      borderRadius: 12,
+      alignItems: "center",
+      justifyContent: "center",
+      backgroundColor: theme.COLORS.primary + "26",
+    },
+    accountChipAvatarText: {
+      fontSize: 11,
+      fontWeight: "800",
+      color: theme.COLORS.primary,
+    },
+    accountChipText: {
+      fontSize: 12,
+      fontWeight: "700",
+      color: theme.COLORS.text,
+      flexShrink: 1,
+    },
+
+    // ── Amount card ──
     heroCard: {
       backgroundColor: theme.COLORS.surface,
-      borderRadius: 20,
-      padding: 18,
-      marginBottom: 14,
+      borderRadius: 22,
+      padding: 16,
+      marginBottom: 12,
     },
     heroTopRow: {
       flexDirection: "row",
       justifyContent: "space-between",
       alignItems: "center",
-      marginBottom: 12,
+      marginBottom: 8,
     },
-    heroLabel: {
+    heroBalanceHint: {
       fontSize: 12,
       fontWeight: "600",
       color: theme.COLORS.textSecondary,
     },
-    maxChip: {
-      backgroundColor: theme.COLORS.primary + "20",
-      paddingHorizontal: 10,
-      paddingVertical: 4,
-      borderRadius: 10,
-    },
-    maxChipText: { fontSize: 11, fontWeight: "700", color: theme.COLORS.primary },
     heroAmountRow: {
       flexDirection: "row",
       alignItems: "center",
@@ -1082,8 +1402,9 @@ const createStyles = (theme) =>
     },
     heroAmountInput: {
       flex: 1,
-      fontSize: 36,
-      fontWeight: "700",
+      fontSize: 38,
+      fontWeight: "800",
+      letterSpacing: -0.5,
       color: theme.COLORS.text,
       padding: 0,
     },
@@ -1093,17 +1414,30 @@ const createStyles = (theme) =>
       gap: 6,
       backgroundColor: theme.COLORS.background,
       borderRadius: 20,
-      paddingVertical: 6,
-      paddingHorizontal: 10,
+      paddingVertical: 7,
+      paddingHorizontal: 12,
     },
     heroTokenLogo: { width: 24, height: 24, borderRadius: 12 },
-    heroTokenSymbol: { fontSize: 14, fontWeight: "700", color: theme.COLORS.text },
-    heroBalanceHint: {
-      fontSize: 12,
-      color: theme.COLORS.textSecondary,
-      marginTop: 12,
+    heroTokenSymbol: {
+      fontSize: 14,
+      fontWeight: "800",
+      color: theme.COLORS.text,
     },
-    heroErrorText: { fontSize: 11, color: theme.COLORS.error, marginTop: 8 },
+    percentRow: { flexDirection: "row", gap: 8, marginTop: 14 },
+    percentChip: {
+      flex: 1,
+      height: 32,
+      borderRadius: 16,
+      alignItems: "center",
+      justifyContent: "center",
+      backgroundColor: theme.COLORS.primary + "1F",
+    },
+    percentChipText: {
+      fontSize: 12,
+      fontWeight: "800",
+      color: theme.COLORS.primary,
+    },
+    heroErrorText: { fontSize: 12, color: theme.COLORS.error, marginTop: 10 },
 
     tokenIcon: {
       width: 24,
@@ -1113,79 +1447,19 @@ const createStyles = (theme) =>
       justifyContent: "center",
       alignItems: "center",
     },
+    tokenIconLg: {
+      width: 32,
+      height: 32,
+      borderRadius: 16,
+      backgroundColor: theme.COLORS.primaryLight,
+      justifyContent: "center",
+      alignItems: "center",
+    },
     tokenIconNative: { backgroundColor: theme.COLORS.primary },
     tokenIconText: {
       fontSize: 10,
-      fontWeight: "600",
-      color: theme.COLORS.background,
-    },
-
-    // ── Generic card ──
-    card: {
-      backgroundColor: theme.COLORS.surface,
-      borderRadius: 16,
-      padding: 16,
-      marginBottom: 14,
-    },
-    cardTitle: {
-      fontSize: 12,
       fontWeight: "700",
-      color: theme.COLORS.textSecondary,
-      textTransform: "uppercase",
-      marginBottom: 12,
-    },
-    cardHeaderRow: { marginBottom: 10 },
-
-    modeToggle: {
-      flexDirection: "row",
-      backgroundColor: theme.COLORS.background,
-      borderRadius: 10,
-      padding: 3,
-      gap: 3,
-      alignSelf: "flex-start",
-    },
-    modePill: {
-      flexDirection: "row",
-      alignItems: "center",
-      justifyContent: "center",
-      gap: 5,
-      paddingVertical: 6,
-      paddingHorizontal: 12,
-      borderRadius: 8,
-    },
-    modePillActive: { backgroundColor: theme.COLORS.primary },
-    modePillLabel: { fontSize: 12, fontWeight: "600" },
-
-    recipientInputContainer: { marginBottom: 0 },
-
-    resolvedChip: {
-      flexDirection: "row",
-      alignItems: "center",
-      gap: 6,
-      marginTop: 10,
-      backgroundColor: theme.COLORS.success + "14",
-      borderRadius: 8,
-      paddingHorizontal: 10,
-      paddingVertical: 8,
-    },
-    resolvedChipDot: {
-      width: 6,
-      height: 6,
-      borderRadius: 3,
-      backgroundColor: theme.COLORS.success,
-      flexShrink: 0,
-    },
-    resolvedChipLabel: {
-      fontSize: 11,
-      fontWeight: "600",
-      color: theme.COLORS.textSecondary,
-    },
-    resolvedChipAddress: {
-      flex: 1,
-      fontSize: 12,
-      fontWeight: "600",
-      color: theme.COLORS.text,
-      fontFamily: Platform.OS === "ios" ? "Menlo" : "monospace",
+      color: theme.COLORS.background,
     },
 
     // ── Review card ──
@@ -1208,9 +1482,21 @@ const createStyles = (theme) =>
     reviewFeeLoading: { flexDirection: "row", alignItems: "center", gap: 6 },
     reviewFeeLoadingText: { fontSize: 12, color: theme.COLORS.textSecondary },
     reviewError: { fontSize: 12, color: theme.COLORS.error, fontWeight: "600" },
-    reviewErrorDetail: { fontSize: 11, color: theme.COLORS.error, marginTop: 4 },
-    reviewLabelTotal: { fontSize: 14, fontWeight: "700", color: theme.COLORS.text },
-    reviewValueTotal: { fontSize: 14, fontWeight: "700", color: theme.COLORS.primary },
+    reviewErrorDetail: {
+      fontSize: 11,
+      color: theme.COLORS.error,
+      marginTop: 4,
+    },
+    reviewLabelTotal: {
+      fontSize: 14,
+      fontWeight: "700",
+      color: theme.COLORS.text,
+    },
+    reviewValueTotal: {
+      fontSize: 14,
+      fontWeight: "700",
+      color: theme.COLORS.primary,
+    },
     reviewTotalStack: { alignItems: "flex-end" },
     reviewValueSecondary: {
       fontSize: 10,
@@ -1218,8 +1504,16 @@ const createStyles = (theme) =>
       marginTop: 2,
     },
 
-    submitButton: { marginTop: 4 },
+    footer: {
+      paddingHorizontal: 16,
+      paddingTop: 10,
+      paddingBottom: Platform.OS === "ios" ? 28 : 16,
+      backgroundColor: theme.COLORS.background,
+      borderTopWidth: 1,
+      borderTopColor: theme.COLORS.border,
+    },
 
+    // ── Token modal ──
     modalOverlay: {
       flex: 1,
       backgroundColor: "rgba(0,0,0,0.5)",
@@ -1227,8 +1521,8 @@ const createStyles = (theme) =>
     },
     modalContent: {
       backgroundColor: theme.COLORS.background,
-      borderTopLeftRadius: 20,
-      borderTopRightRadius: 20,
+      borderTopLeftRadius: 24,
+      borderTopRightRadius: 24,
       maxHeight: "80%",
     },
     modalHeader: {
@@ -1239,7 +1533,7 @@ const createStyles = (theme) =>
       borderBottomWidth: 1,
       borderBottomColor: theme.COLORS.border,
     },
-    modalTitle: { fontSize: 16, fontWeight: "600", color: theme.COLORS.text },
+    modalTitle: { fontSize: 16, fontWeight: "700", color: theme.COLORS.text },
     modalClose: { padding: 4 },
     tokenList: { padding: 16 },
     tokenItem: {
@@ -1247,7 +1541,7 @@ const createStyles = (theme) =>
       justifyContent: "space-between",
       alignItems: "center",
       padding: 12,
-      borderRadius: 12,
+      borderRadius: 14,
       backgroundColor: theme.COLORS.surface,
     },
     tokenItemSelected: {
@@ -1267,13 +1561,13 @@ const createStyles = (theme) =>
     tokenItemHeader: { flexDirection: "row", alignItems: "center", gap: 6 },
     tokenItemSymbol: {
       fontSize: 14,
-      fontWeight: "600",
+      fontWeight: "700",
       color: theme.COLORS.text,
     },
     sourceBadge: { paddingHorizontal: 6, paddingVertical: 2, borderRadius: 4 },
     sourceBadgeText: {
       fontSize: 9,
-      fontWeight: "600",
+      fontWeight: "700",
       textTransform: "uppercase",
     },
     tokenItemName: {
@@ -1284,7 +1578,7 @@ const createStyles = (theme) =>
     tokenItemRight: { alignItems: "flex-end" },
     tokenItemBalance: {
       fontSize: 13,
-      fontWeight: "600",
+      fontWeight: "700",
       color: theme.COLORS.text,
     },
     tokenItemBalanceZero: { color: theme.COLORS.textSecondary },

@@ -1,11 +1,15 @@
 // services/CoinGeckoService.js
-import axios from 'axios';
+import axios from "axios";
 
-const COINGECKO_API_BASE = 'https://api.coingecko.com/api/v3';
-const COINGECKO_PRO_API_BASE = 'https://pro-api.coingecko.com/api/v3';
+const COINGECKO_API_BASE = "https://api.coingecko.com/api/v3";
+const COINGECKO_PRO_API_BASE = "https://pro-api.coingecko.com/api/v3";
 
 // Free API doesn't require key, but rate limited to 10-50 calls/minute
 // Pro API requires key: https://www.coingecko.com/en/api/pricing
+
+// Platforms whose contract/mint addresses are case-sensitive (base58).
+// Lowercasing these corrupts the address, so they must be left as-is.
+const CASE_SENSITIVE_PLATFORMS = new Set(["solana"]);
 
 class CoinGeckoService {
   constructor(apiKey = null) {
@@ -20,14 +24,24 @@ class CoinGeckoService {
    */
   getHeaders() {
     const headers = {
-      'Accept': 'application/json',
+      Accept: "application/json",
     };
-    
+
     if (this.apiKey) {
-      headers['x-cg-pro-api-key'] = this.apiKey;
+      headers["x-cg-pro-api-key"] = this.apiKey;
     }
-    
+
     return headers;
+  }
+
+  /**
+   * Normalize a contract address for cache keys and result maps.
+   * EVM addresses are case-insensitive (lowercased); Solana mints are not.
+   */
+  normalizeAddress(address, platform = "ethereum") {
+    return CASE_SENSITIVE_PLATFORMS.has(platform)
+      ? address
+      : address.toLowerCase();
   }
 
   /**
@@ -60,20 +74,20 @@ class CoinGeckoService {
   }
 
   /**
-   * Search for token by contract address
+   * Search for token by contract address (or SPL mint when platform = 'solana')
    * Returns coin ID needed for other API calls
    */
-  async searchTokenByContract(contractAddress, platform = 'ethereum') {
+  async searchTokenByContract(contractAddress, platform = "ethereum") {
     try {
-      const cacheKey = `search_${platform}_${contractAddress.toLowerCase()}`;
+      const cacheKey = `search_${platform}_${this.normalizeAddress(contractAddress, platform)}`;
       const cached = this.getFromCache(cacheKey);
       if (cached) return cached;
 
-      console.log('[CoinGecko] Searching for token:', contractAddress);
+      console.log("[CoinGecko] Searching for token:", contractAddress);
 
       const response = await axios.get(
         `${this.baseURL}/coins/${platform}/contract/${contractAddress}`,
-        { headers: this.getHeaders() }
+        { headers: this.getHeaders() },
       );
 
       const data = {
@@ -87,7 +101,10 @@ class CoinGeckoService {
       this.setCache(cacheKey, data);
       return data;
     } catch (error) {
-      console.error('[CoinGecko] Error searching token:', error.response?.data || error.message);
+      console.error(
+        "[CoinGecko] Error searching token:",
+        error.response?.data || error.message,
+      );
       return null;
     }
   }
@@ -95,30 +112,34 @@ class CoinGeckoService {
   /**
    * Get token price in USD
    */
-  async getTokenPrice(contractAddress, platform = 'ethereum') {
+  async getTokenPrice(contractAddress, platform = "ethereum") {
     try {
-      const cacheKey = `price_${platform}_${contractAddress.toLowerCase()}`;
+      const normalized = this.normalizeAddress(contractAddress, platform);
+      const cacheKey = `price_${platform}_${normalized}`;
       const cached = this.getFromCache(cacheKey);
       if (cached) return cached;
 
-      console.log('[CoinGecko] Fetching price for:', contractAddress);
+      console.log("[CoinGecko] Fetching price for:", contractAddress);
 
       const response = await axios.get(
         `${this.baseURL}/simple/token_price/${platform}`,
         {
           params: {
             contract_addresses: contractAddress,
-            vs_currencies: 'usd',
+            vs_currencies: "usd",
             include_24hr_change: true,
           },
           headers: this.getHeaders(),
-        }
+        },
       );
 
-      const data = response.data[contractAddress.toLowerCase()];
-      
+      // Exact match first (Solana), then case-insensitive (EVM returns lowercase keys)
+      const data =
+        response.data[contractAddress] ||
+        response.data[contractAddress.toLowerCase()];
+
       if (!data) {
-        console.log('[CoinGecko] No price data found');
+        console.log("[CoinGecko] No price data found");
         return null;
       }
 
@@ -130,31 +151,39 @@ class CoinGeckoService {
       this.setCache(cacheKey, priceData);
       return priceData;
     } catch (error) {
-      console.error('[CoinGecko] Error fetching price:', error.response?.data || error.message);
+      console.error(
+        "[CoinGecko] Error fetching price:",
+        error.response?.data || error.message,
+      );
       return null;
     }
   }
 
   /**
    * Get multiple token prices at once (more efficient)
+   * Result is keyed by normalized address: lowercase for EVM, original case for Solana.
    */
-  async getMultipleTokenPrices(contractAddresses, platform = 'ethereum') {
+  async getMultipleTokenPrices(contractAddresses, platform = "ethereum") {
     try {
       if (!contractAddresses || contractAddresses.length === 0) {
         return {};
       }
 
-      console.log('[CoinGecko] Fetching prices for', contractAddresses.length, 'tokens');
+      console.log(
+        "[CoinGecko] Fetching prices for",
+        contractAddresses.length,
+        "tokens",
+      );
 
       // Check cache first
       const prices = {};
       const uncachedAddresses = [];
 
       for (const address of contractAddresses) {
-        const cacheKey = `price_${platform}_${address.toLowerCase()}`;
-        const cached = this.getFromCache(cacheKey);
+        const key = this.normalizeAddress(address, platform);
+        const cached = this.getFromCache(`price_${platform}_${key}`);
         if (cached) {
-          prices[address.toLowerCase()] = cached;
+          prices[key] = cached;
         } else {
           uncachedAddresses.push(address);
         }
@@ -173,72 +202,157 @@ class CoinGeckoService {
             `${this.baseURL}/simple/token_price/${platform}`,
             {
               params: {
-                contract_addresses: chunk.join(','),
-                vs_currencies: 'usd',
+                contract_addresses: chunk.join(","),
+                vs_currencies: "usd",
                 include_24hr_change: true,
               },
               headers: this.getHeaders(),
-            }
+            },
           );
 
-          // Store in cache and results
-          for (const [address, data] of Object.entries(response.data)) {
+          // Match response entries back to the addresses we asked for
+          const byLowerKey = {};
+          for (const [respKey, respData] of Object.entries(response.data)) {
+            byLowerKey[respKey.toLowerCase()] = respData;
+          }
+
+          for (const address of chunk) {
+            const data =
+              response.data[address] || byLowerKey[address.toLowerCase()];
+            if (!data) continue;
+
+            const key = this.normalizeAddress(address, platform);
             const priceData = {
               usd: data.usd,
               usd_24h_change: data.usd_24h_change,
             };
-            prices[address] = priceData;
-            this.setCache(`price_${platform}_${address}`, priceData);
+            prices[key] = priceData;
+            this.setCache(`price_${platform}_${key}`, priceData);
           }
         }
       }
 
-      console.log('[CoinGecko] ✅ Fetched prices for', Object.keys(prices).length, 'tokens');
+      console.log(
+        "[CoinGecko] ✅ Fetched prices for",
+        Object.keys(prices).length,
+        "tokens",
+      );
       return prices;
     } catch (error) {
-      console.error('[CoinGecko] Error fetching multiple prices:', error.response?.data || error.message);
+      console.error(
+        "[CoinGecko] Error fetching multiple prices:",
+        error.response?.data || error.message,
+      );
       return {};
     }
   }
 
   /**
+   * Get prices for native/major coins by CoinGecko coin id
+   * (e.g. ['solana', 'ethereum']). Token-contract endpoints don't cover these.
+   * Returns { [coinId]: { usd, usd_24h_change } }
+   */
+  async getCoinPrices(coinIds) {
+    try {
+      if (!coinIds || coinIds.length === 0) {
+        return {};
+      }
+
+      const prices = {};
+      const uncachedIds = [];
+
+      for (const id of coinIds) {
+        const cached = this.getFromCache(`coin_${id}`);
+        if (cached) {
+          prices[id] = cached;
+        } else {
+          uncachedIds.push(id);
+        }
+      }
+
+      if (uncachedIds.length > 0) {
+        const response = await axios.get(`${this.baseURL}/simple/price`, {
+          params: {
+            ids: uncachedIds.join(","),
+            vs_currencies: "usd",
+            include_24hr_change: true,
+          },
+          headers: this.getHeaders(),
+        });
+
+        for (const [id, data] of Object.entries(response.data)) {
+          const priceData = {
+            usd: data.usd,
+            usd_24h_change: data.usd_24h_change,
+          };
+          prices[id] = priceData;
+          this.setCache(`coin_${id}`, priceData);
+        }
+      }
+
+      return prices;
+    } catch (error) {
+      console.error(
+        "[CoinGecko] Error fetching coin prices:",
+        error.response?.data || error.message,
+      );
+      return {};
+    }
+  }
+
+  /**
+   * Get SOL price in USD
+   */
+  async getSolPrice() {
+    const prices = await this.getCoinPrices(["solana"]);
+    return prices.solana || null;
+  }
+
+  /**
    * Get token logo/image
    */
-  async getTokenLogo(contractAddress, platform = 'ethereum') {
+  async getTokenLogo(contractAddress, platform = "ethereum") {
     try {
-      const tokenData = await this.searchTokenByContract(contractAddress, platform);
+      const tokenData = await this.searchTokenByContract(
+        contractAddress,
+        platform,
+      );
       return tokenData?.image || null;
     } catch (error) {
-      console.error('[CoinGecko] Error fetching logo:', error.message);
+      console.error("[CoinGecko] Error fetching logo:", error.message);
       return null;
     }
   }
 
   /**
-   * Get platform ID for chain
+   * Get platform ID for chain.
+   * Accepts a numeric EVM chain id, or a non-EVM chain key such as 'SOLANA'.
    */
   getPlatformId(chainId) {
     const platformMap = {
-      1: 'ethereum',
-      56: 'binance-smart-chain',
-      137: 'polygon-pos',
-      42161: 'arbitrum-one',
-      10: 'optimistic-ethereum',
-      8453: 'base',
-      43114: 'avalanche',
-      250: 'fantom',
-      100: 'xdai',
-      42220: 'celo',
-      1284: 'moonbeam',
-      1285: 'moonriver',
-      25: 'cronos',
+      1: "ethereum",
+      56: "binance-smart-chain",
+      137: "polygon-pos",
+      42161: "arbitrum-one",
+      10: "optimistic-ethereum",
+      8453: "base",
+      43114: "avalanche",
+      250: "fantom",
+      100: "xdai",
+      42220: "celo",
+      1284: "moonbeam",
+      1285: "moonriver",
+      25: "cronos",
+      // Non-EVM
+      SOLANA: "solana",
       // Testnets (CoinGecko doesn't have testnet data)
-      11155111: 'ethereum', // Sepolia
-      84532: 'base', // Base Sepolia
-      80001: 'polygon-pos', // Mumbai
+      11155111: "ethereum", // Sepolia
+      84532: "base", // Base Sepolia
+      80001: "polygon-pos", // Mumbai
     };
 
-    return platformMap[chainId] || 'ethereum';
+    const key = typeof chainId === "string" ? chainId.toUpperCase() : chainId;
+    return platformMap[key] || "ethereum";
   }
 
   /**
@@ -254,12 +368,12 @@ class CoinGeckoService {
    * Format price change with color indicator
    */
   formatPriceChange(change) {
-    if (!change && change !== 0) return { text: 'N/A', color: 'gray' };
-    
+    if (!change && change !== 0) return { text: "N/A", color: "gray" };
+
     const formatted = change.toFixed(2);
     const text = change > 0 ? `+${formatted}%` : `${formatted}%`;
-    const color = change > 0 ? 'green' : change < 0 ? 'red' : 'gray';
-    
+    const color = change > 0 ? "green" : change < 0 ? "red" : "gray";
+
     return { text, color };
   }
 
@@ -288,20 +402,29 @@ export { CoinGeckoService };
 
 /**
  * USAGE EXAMPLES:
- * 
+ *
  * // Get single token price
  * const price = await coinGeckoService.getTokenPrice('0x...', 'ethereum');
  * console.log('Price:', price.usd);
- * 
+ *
  * // Get multiple prices
  * const prices = await coinGeckoService.getMultipleTokenPrices(['0x...', '0x...'], 'ethereum');
- * 
+ *
  * // Get token logo
  * const logo = await coinGeckoService.getTokenLogo('0x...', 'ethereum');
- * 
+ *
  * // Calculate USD value
  * const usdValue = coinGeckoService.calculateUSDValue('123.456', price);
- * 
+ *
  * // Get platform ID from chain ID
  * const platform = coinGeckoService.getPlatformId(1); // 'ethereum'
+ *
+ * // SOLANA
+ * const sol = await coinGeckoService.getSolPrice(); // native SOL
+ * const platformId = coinGeckoService.getPlatformId('SOLANA'); // 'solana'
+ * const splPrices = await coinGeckoService.getMultipleTokenPrices(
+ *   ['EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v'], // USDC mint
+ *   'solana'
+ * );
+ * // Keys keep the mint's original case: splPrices['EPjF...Dt1v']
  */

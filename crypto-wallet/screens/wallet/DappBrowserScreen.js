@@ -10,7 +10,7 @@ import BrowserHome from "../../components/browser/BrowserHome";
 import BrowserWebView from "../../components/browser/BrowserWebView";
 import ConnectionModal from "../../components/browser/ConnectionModal";
 import PasscodeModal from "../../components/modal/PasscodeModal";
-import NetworkManager from "../../components/wallet/NetworkManager";
+import ChainSwitcher from "../../components/wallet/ChainSwitcher";
 import { Web3Provider } from "../../utils/web3/web3Provider";
 import { DomainSecurityChecker } from "../../utils/security/DomainSecurityChecker";
 import Alert from "../../utils/Alert";
@@ -764,10 +764,11 @@ const BrowserScreen = ({ navigation }) => {
         subtitle="Enter your passcode to continue"
       />
 
-      {/* Network Manager (view-only while browsing) */}
-      <NetworkManager
+      {/* Network switcher — sets the active EVM chain dApps connect to */}
+      <ChainSwitcher
         visible={isNetworkManagerVisible}
         onClose={() => setNetworkManagerVisible(false)}
+        title="dApp network"
       />
     </View>
   );

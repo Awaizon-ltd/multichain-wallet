@@ -10,11 +10,9 @@ const ALCHEMY_NETWORKS = {
   polygon: Network.MATIC_MAINNET,
   arbitrum: Network.ARB_MAINNET,
   optimism: Network.OPT_MAINNET,
-  base: Network.BASE_MAINNET,
-  // Arc / Robinhood Chain aren't in alchemy-sdk's Network enum yet (too new).
-  zetachain: Network.ZETACHAIN_MAINNET,
   hyperliquid: Network.HYPERLIQUID_MAINNET,
   abstract: Network.ABSTRACT_MAINNET,
+  solana: Network.SOLANA_MAINNET,
 };
 
 // Creates an Alchemy SDK instance for any chain

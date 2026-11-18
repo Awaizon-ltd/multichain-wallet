@@ -1,16 +1,16 @@
 // screens/wallet/TokensScreen.js
 // ─────────────────────────────────────────────────────────────────────────────
-// Manage Tokens — the full catalog for the active chain, with a per-token
-// enable/disable switch. Enabled tokens are what shows up in the portfolio
-// (usePortfolioAssets.js reads exactly this list via TokenDatabase.js).
+// Manage Tokens — the full catalog of every enabled network, with a
+// per-token enable/disable switch. Enabled tokens are what shows up in the
+// portfolio (usePortfolioAssets.js reads the same stores).
 //
 // Everything here reads through the shared data layer:
-//   • catalog          → services/apiClient.js  (cached 10min, same as useSwap)
-//   • balances         → one Multicall batch call for the whole catalog
+//   • catalog + balances → hooks/useMultiChainTokens.js (catalog cached 10min,
+//                          same as useSwap; one balance round-trip per chain)
 //   • prices           → services/coingecko.js  (already cached)
-//   • enabled/disabled → utils/TokenDatabase.js  (SQLite, same table the
-//                        portfolio reads — flipping a switch here is instant
-//                        everywhere else in the app)
+//   • enabled/disabled → utils/TokenDatabase.js for EVM (SQLite, the table the
+//                        portfolio reads) and utils/splVisibility.js for
+//                        Solana — flipping a switch is instant everywhere
 // No screen-local cache reimplementation — that was the old bug: a bespoke
 // AsyncStorage cache here, duplicating (and drifting from) the real one.
 // ─────────────────────────────────────────────────────────────────────────────
@@ -19,7 +19,8 @@ import {
   View,
   Text,
   StyleSheet,
-  FlatList,
+  SectionList,
+  ScrollView,
   RefreshControl,
   TouchableOpacity,
   TextInput,
@@ -28,9 +29,8 @@ import {
   Switch,
 } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
-import { formatUnits } from "ethers";
 import { useWallet } from "../../contexts/WalletContext";
-import { useChain } from "../../contexts/ChainContext";
+import { useChain, isSolanaChain } from "../../contexts/ChainContext";
 import { useTheme } from "../../contexts/ThemeContext";
 import Button from "../../components/common/Button";
 import {
@@ -38,16 +38,13 @@ import {
   disableToken,
   getEnabledAddressSet,
 } from "../../utils/TokenDatabase";
-import { getNativeBalance } from "../../utils/blockchain/Balances";
-import { batchGetTokenBalances } from "../../utils/cache/Multicall";
-import { apiGet } from "../../services/apiClient";
-import { TTL } from "../../utils/cache/DataCache";
+import useMultiChainTokens, { tokenKey } from "../../hooks/useMultiChainTokens";
+import { getSplPrefs, setSplVisible, isSplVisible } from "../../utils/splVisibility";
 import { humanizeError } from "../../utils/errors/humanizeError";
 import coinGeckoService from "../../services/coingecko";
 import Alert from "../../utils/Alert";
 import ChainBadge from "../../components/common/ChainBadge";
 
-const NATIVE_TOKEN_ADDRESS = "0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE";
 const MAX_PRICE_FETCHES = 40; // cap CoinGecko calls per load — prices are a nice-to-have, not blocking
 
 // ─── Formatting helpers ───────────────────────────────────────────────────────
@@ -185,226 +182,266 @@ const TokenRow = React.memo(
 );
 
 // ─── Screen ───────────────────────────────────────────────────────────────────
+// Every enabled network's catalog in one list, grouped by chain (SectionList,
+// virtualized — only what's on screen is rendered). Chips filter to one
+// chain; search runs across all of them. Each chain fills in as soon as its
+// own data arrives (hooks/useMultiChainTokens).
 
 const TokensScreen = ({ navigation }) => {
   const theme = useTheme();
   const styles = createStyles(theme);
-  const { wallet } = useWallet();
-  const { activeChain } = useChain();
+  const { wallet, solanaAddress } = useWallet();
+  const { getEnabledNetworks } = useChain();
 
-  const [catalog, setCatalog] = useState([]);
-  const [enabledAddresses, setEnabledAddresses] = useState(new Set());
-  const [balancesByAddr, setBalancesByAddr] = useState({});
-  const [pricesByAddr, setPricesByAddr] = useState({});
-  const [loading, setLoading] = useState(true);
+  // Recompute only when the enabled set changes, not on every render
+  const networks = useMemo(() => getEnabledNetworks(), [getEnabledNetworks]);
+  const { byChain, reload } = useMultiChainTokens({ networks, withBalances: true });
+
+  // chainId → Set of enabled keys (EVM: SQLite table; Solana: splVisibility)
+  const [enabledByChain, setEnabledByChain] = useState({});
+  const [splPrefs, setSplPrefs] = useState(null);
+  const [pricesByKey, setPricesByKey] = useState({});
+  const [chainFilter, setChainFilter] = useState("all");
   const [refreshing, setRefreshing] = useState(false);
   const [query, setQuery] = useState("");
-  const [togglingAddr, setTogglingAddr] = useState(null);
-  const [errorBanner, setErrorBanner] = useState(null);
+  const [togglingKey, setTogglingKey] = useState(null);
 
-  const loadingRef = useRef(false);
+  const userAddress = wallet?.address?.toLowerCase();
 
+  // ── Enabled sets ────────────────────────────────────────────────────────────
   useEffect(() => {
-    if (wallet?.address && activeChain) load();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [wallet?.address, activeChain?.id]);
+    if (!userAddress) return;
+    let cancelled = false;
+    (async () => {
+      const entries = await Promise.all(
+        networks
+          .filter((c) => !isSolanaChain(c))
+          .map(async (c) => [c.id, await getEnabledAddressSet(userAddress, parseInt(c.id))]),
+      );
+      const prefs = solanaAddress ? await getSplPrefs(solanaAddress) : null;
+      if (cancelled) return;
+      setEnabledByChain(Object.fromEntries(entries));
+      setSplPrefs(prefs);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [userAddress, solanaAddress, networks]);
 
-  const load = useCallback(async (forceRefresh = false) => {
-    if (loadingRef.current) return;
-    loadingRef.current = true;
-    setLoading(true);
-    setErrorBanner(null);
+  // ── Auto-enable ERC-20 holdings, then prices (capped) ───────────────────────
+  // A token the user actually holds is switched on the first time it's seen,
+  // so a real balance never silently disappears from the portfolio.
+  const pricedRef = useRef(new Set());
+  useEffect(() => {
+    if (!userAddress) return;
+    for (const chain of networks) {
+      const entry = byChain[chain.id];
+      if (!entry || entry.loading || pricedRef.current.has(chain.id)) continue;
+      pricedRef.current.add(chain.id);
+      const solana = isSolanaChain(chain);
+      const enabled = enabledByChain[chain.id] ?? new Set();
 
-    try {
-      const userAddress = wallet.address.toLowerCase();
-      const chainId = parseInt(activeChain.id);
-
-      // ── 1. Catalog + enabled set, in parallel ──────────────────────────────
-      const [catalogRes, enabledSet] = await Promise.all([
-        apiGet("/swap/tokens", {
-          params: { chainId },
-          ttl: forceRefresh ? 0 : TTL.API_TOKEN_CATALOG,
-        }),
-        getEnabledAddressSet(userAddress, chainId),
-      ]);
-      const tokens = catalogRes.data.tokens;
-      setCatalog(tokens);
-      setEnabledAddresses(enabledSet);
-
-      // ── 2. Balances: native separately, everything else in ONE Multicall ──
-      const erc20Tokens = tokens.filter((t) => !t.isNative);
-      const nativeToken = tokens.find((t) => t.isNative);
-
-      const [nativeBal, balanceMap] = await Promise.all([
-        nativeToken
-          ? getNativeBalance(wallet.address, activeChain).catch(() => null)
-          : Promise.resolve(null),
-        erc20Tokens.length
-          ? batchGetTokenBalances(
-              wallet.address,
-              erc20Tokens.map((t) => t.address),
-              activeChain,
-            ).catch(() => new Map())
-          : Promise.resolve(new Map()),
-      ]);
-
-      const balMap = {};
-      if (nativeToken && nativeBal) balMap[NATIVE_TOKEN_ADDRESS.toLowerCase()] = nativeBal;
-      for (const [addr, wei] of balanceMap) {
-        const t = erc20Tokens.find((x) => x.address.toLowerCase() === addr);
-        if (!t) continue;
-        balMap[addr] = { formatted: formatUnits(wei, t.decimals), wei: wei.toString() };
-      }
-      setBalancesByAddr(balMap);
-
-      // Auto-enable any token the user actually holds but hasn't explicitly
-      // toggled yet, so a real balance never silently disappears from the
-      // portfolio just because it wasn't manually enabled first.
-      const holdingsNotEnabled = erc20Tokens.filter((t) => {
-        const bal = balMap[t.address.toLowerCase()];
-        return bal && parseFloat(bal.formatted) > 0 && !enabledSet.has(t.address.toLowerCase());
-      });
-      if (holdingsNotEnabled.length) {
-        await Promise.all(
-          holdingsNotEnabled.map((t) => enableToken(userAddress, chainId, t)),
-        );
-        setEnabledAddresses((prev) => {
-          const next = new Set(prev);
-          holdingsNotEnabled.forEach((t) => next.add(t.address.toLowerCase()));
-          return next;
-        });
+      const held = entry.tokens.filter(
+        (t) => !t.isNative && parseFloat(entry.balances[tokenKey(chain, t)] || "0") > 0,
+      );
+      if (!solana) {
+        const toEnable = held.filter((t) => !enabled.has(t.address.toLowerCase()));
+        if (toEnable.length) {
+          Promise.all(toEnable.map((t) => enableToken(userAddress, parseInt(chain.id), t)))
+            .then(() =>
+              setEnabledByChain((prev) => {
+                const next = new Set(prev[chain.id] ?? []);
+                toEnable.forEach((t) => next.add(t.address.toLowerCase()));
+                return { ...prev, [chain.id]: next };
+              }),
+            )
+            .catch(() => {});
+        }
       }
 
-      // ── 3. Prices — capped, and only for tokens with a balance or already enabled ──
-      const priceCandidates = erc20Tokens
-        .filter((t) => {
-          const bal = balMap[t.address.toLowerCase()];
-          return (bal && parseFloat(bal.formatted) > 0) || enabledSet.has(t.address.toLowerCase());
-        })
-        .slice(0, MAX_PRICE_FETCHES);
-
-      const priceResults = await Promise.all(
-        priceCandidates.map(async (t) => {
+      const candidates = held.slice(0, MAX_PRICE_FETCHES);
+      Promise.all(
+        candidates.map(async (t) => {
           try {
             const price =
-              (await coinGeckoService.getTokenPrice(t.address, chainId)) ??
-              (await coinGeckoService.getTokenPrice(t.symbol, chainId));
-            return [t.address.toLowerCase(), price];
+              (await coinGeckoService.getTokenPrice(t.address, chain.id)) ??
+              (solana ? null : await coinGeckoService.getTokenPrice(t.symbol, chain.id));
+            return [`${chain.id}:${tokenKey(chain, t)}`, price];
           } catch {
-            return [t.address.toLowerCase(), null];
+            return [null, null];
           }
         }),
+      ).then((results) =>
+        setPricesByKey((prev) => ({
+          ...prev,
+          ...Object.fromEntries(results.filter(([k, p]) => k && p)),
+        })),
       );
-      setPricesByAddr(Object.fromEntries(priceResults.filter(([, p]) => p)));
-    } catch (err) {
-      const humanized = humanizeError(err, { fallbackTitle: "Couldn't Load Tokens" });
-      setErrorBanner(humanized);
-    } finally {
-      setLoading(false);
-      loadingRef.current = false;
     }
-  }, [wallet?.address, activeChain]);
+  }, [byChain, networks, userAddress, enabledByChain]);
 
   const onRefresh = useCallback(async () => {
     setRefreshing(true);
-    await load(true);
+    pricedRef.current = new Set();
+    await reload({ force: true });
     setRefreshing(false);
-  }, [load]);
+  }, [reload]);
+
+  const isEnabled = useCallback(
+    (chain, token, held) => {
+      if (token.isNative) return true;
+      if (isSolanaChain(chain)) return !!splPrefs && isSplVisible(splPrefs, token.address, held);
+      return (enabledByChain[chain.id] ?? new Set()).has(token.address.toLowerCase());
+    },
+    [enabledByChain, splPrefs],
+  );
 
   // ── Toggle enable/disable ───────────────────────────────────────────────────
   const handleToggle = useCallback(
     async (token) => {
-      const addr = token.address.toLowerCase();
-      const userAddress = wallet.address.toLowerCase();
-      const chainId = parseInt(activeChain.id);
-      const willEnable = !enabledAddresses.has(addr);
-
-      setTogglingAddr(addr);
+      const chain = token.chain;
+      const key = `${chain.id}:${tokenKey(chain, token)}`;
+      const willEnable = !token.enabled;
+      setTogglingKey(key);
       try {
-        if (willEnable) {
-          await enableToken(userAddress, chainId, token);
+        if (isSolanaChain(chain)) {
+          setSplPrefs(await setSplVisible(solanaAddress, token.address, willEnable));
         } else {
-          await disableToken(userAddress, chainId, addr);
+          const chainId = parseInt(chain.id);
+          const addr = token.address.toLowerCase();
+          if (willEnable) await enableToken(userAddress, chainId, token);
+          else await disableToken(userAddress, chainId, addr);
+          setEnabledByChain((prev) => {
+            const next = new Set(prev[chain.id] ?? []);
+            willEnable ? next.add(addr) : next.delete(addr);
+            return { ...prev, [chain.id]: next };
+          });
         }
-        setEnabledAddresses((prev) => {
-          const next = new Set(prev);
-          willEnable ? next.add(addr) : next.delete(addr);
-          return next;
-        });
       } catch (err) {
         const humanized = humanizeError(err, { fallbackTitle: "Couldn't Update Token" });
         Alert.alert(humanized.title, humanized.message);
       } finally {
-        setTogglingAddr(null);
+        setTogglingKey(null);
       }
     },
-    [wallet?.address, activeChain?.id, enabledAddresses],
+    [userAddress, solanaAddress],
   );
 
-  // ── Rows ready for render ───────────────────────────────────────────────────
-  const rows = useMemo(() => {
+  // ── Sections ready for render ───────────────────────────────────────────────
+  const sections = useMemo(() => {
     const q = query.trim().toLowerCase();
-    return catalog
-      .filter((t) => {
-        if (!q) return true;
-        return t.symbol.toLowerCase().includes(q) || t.name.toLowerCase().includes(q);
-      })
-      .map((t) => {
-        const addr = t.address.toLowerCase();
-        const balance = balancesByAddr[addr] ?? null;
-        const price = pricesByAddr[addr] ?? null;
-        const usdValue =
-          balance && price?.usd ? parseFloat(balance.formatted) * price.usd : 0;
+    return networks
+      .filter((c) => chainFilter === "all" || c.id === chainFilter)
+      .map((chain) => {
+        const entry = byChain[chain.id] ?? { tokens: [], balances: {} };
+        const data = entry.tokens
+          .filter(
+            (t) =>
+              !q ||
+              t.symbol.toLowerCase().includes(q) ||
+              t.name.toLowerCase().includes(q) ||
+              t.address.toLowerCase() === q,
+          )
+          .map((t) => {
+            const key = tokenKey(chain, t);
+            const formatted = entry.balances[key];
+            const balance = formatted != null ? { formatted } : null;
+            const held = parseFloat(formatted || "0") > 0;
+            const price = pricesByKey[`${chain.id}:${key}`] ?? null;
+            return {
+              ...t,
+              chain,
+              rowKey: `${chain.id}:${key}`,
+              balance,
+              price,
+              usdValue: held && price?.usd ? parseFloat(formatted) * price.usd : 0,
+              enabled: isEnabled(chain, t, held),
+            };
+          })
+          .sort((a, b) => {
+            if (a.isNative) return -1;
+            if (b.isNative) return 1;
+            if (a.enabled !== b.enabled) return a.enabled ? -1 : 1;
+            return (b.usdValue ?? 0) - (a.usdValue ?? 0);
+          });
         return {
-          ...t,
-          balance,
-          price,
-          usdValue,
-          enabled: t.isNative ? true : enabledAddresses.has(addr),
+          chain,
+          key: String(chain.id),
+          loading: !!entry.loading && entry.tokens.length === 0,
+          error: entry.error,
+          enabledCount: data.filter((r) => r.enabled && !r.isNative).length,
+          data,
         };
       })
-      .sort((a, b) => {
-        if (a.isNative) return -1;
-        if (b.isNative) return 1;
-        if (a.enabled !== b.enabled) return a.enabled ? -1 : 1;
-        return (b.usdValue ?? 0) - (a.usdValue ?? 0);
-      });
-  }, [catalog, balancesByAddr, pricesByAddr, enabledAddresses, query]);
+      .filter((s) => s.data.length || s.loading || (!q && s.error));
+  }, [networks, byChain, pricesByKey, isEnabled, query, chainFilter]);
 
-  const enabledCount = rows.filter((r) => r.enabled && !r.isNative).length;
+  const enabledCount = sections.reduce((n, s) => n + s.enabledCount, 0);
+  const anyLoading = networks.some((c) => byChain[c.id]?.loading);
 
   const handleTokenPress = (token) => {
     if (!token.balance || parseFloat(token.balance.formatted) === 0) return;
+    const chain = token.chain;
     navigation.navigate("TokenDetail", {
-      token: {
-        address: token.address,
-        symbol: token.symbol,
-        name: token.name,
-        decimals: token.decimals,
-        logoURI: token.logoURI || token.logo,
-        isCustom: false,
-      },
-      chain: {
-        id: activeChain.id,
-        name: activeChain.name,
-        symbol: activeChain.symbol,
-        icon: activeChain.icon,
-      },
+      token: token.isNative
+        ? undefined
+        : {
+            address: token.address,
+            symbol: token.symbol,
+            name: token.name,
+            decimals: token.decimals,
+            logoURI: token.logoURI || token.logo,
+            isCustom: false,
+          },
+      chain: { id: chain.id, name: chain.name, symbol: chain.symbol, icon: chain.icon, type: chain.type },
       balance: token.balance.formatted,
       usdValue: token.usdValue,
       price: token.price?.usd || 0,
       priceChange24h: token.price?.usd_24h_change,
-      walletAddress: wallet.address,
-      chainId: parseInt(activeChain.id),
+      walletAddress: isSolanaChain(chain) ? solanaAddress : wallet.address,
+      chainId: chain.id,
     });
   };
 
+  // SendScreen is EVM-only; Solana rows get no send shortcut
   const handleSendToken = (token) => {
+    if (isSolanaChain(token.chain)) return;
     navigation.navigate("Send", {
       token: { ...token, balance: token.balance?.formatted || "0" },
-      chain: activeChain,
+      chain: token.chain,
     });
   };
+
+  const renderItem = useCallback(
+    ({ item }) => (
+      <TokenRow
+        token={item}
+        chainIcon={item.chain.icon}
+        onToggle={handleToggle}
+        onSend={handleSendToken}
+        onPress={handleTokenPress}
+        toggling={togglingKey === item.rowKey}
+        theme={theme}
+      />
+    ),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [handleToggle, togglingKey, theme],
+  );
+
+  const renderSectionHeader = useCallback(
+    ({ section }) => (
+      <View style={[styles.sectionHeader, { backgroundColor: theme.COLORS.background }]}>
+        <Image source={{ uri: section.chain.icon }} style={styles.sectionIcon} />
+        <Text style={styles.sectionTitle}>{section.chain.name}</Text>
+        <Text style={styles.sectionMeta}>
+          {section.loading ? "Loading…" : section.error ? "Couldn't load" : `${section.enabledCount} enabled`}
+        </Text>
+        {section.loading && <ActivityIndicator size="small" color={theme.COLORS.primary} />}
+      </View>
+    ),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [theme],
+  );
 
   return (
     <View style={styles.container}>
@@ -416,7 +453,7 @@ const TokensScreen = ({ navigation }) => {
           <View>
             <Text style={styles.headerTitle}>Manage Tokens</Text>
             <Text style={styles.headerSubtitle}>
-              {activeChain.name} · {enabledCount} enabled
+              {networks.length} networks · {enabledCount} enabled
             </Text>
           </View>
         </View>
@@ -430,10 +467,11 @@ const TokensScreen = ({ navigation }) => {
         <TextInput
           value={query}
           onChangeText={setQuery}
-          placeholder="Search tokens"
+          placeholder="Search tokens on all networks"
           placeholderTextColor={theme.COLORS.textTertiary}
           style={[styles.searchInput, { color: theme.COLORS.text }]}
           autoCorrect={false}
+          autoCapitalize="none"
         />
         {query.length > 0 && (
           <TouchableOpacity onPress={() => setQuery("")}>
@@ -442,42 +480,51 @@ const TokensScreen = ({ navigation }) => {
         )}
       </View>
 
-      {errorBanner && (
-        <View style={[styles.errorBanner, { backgroundColor: theme.COLORS.error + "12", borderColor: theme.COLORS.error + "40" }]}>
-          <Ionicons name="alert-circle-outline" size={16} color={theme.COLORS.error} />
-          <View style={{ flex: 1 }}>
-            <Text style={[styles.errorTitle, { color: theme.COLORS.error }]}>{errorBanner.title}</Text>
-            <Text style={[styles.errorMessage, { color: theme.COLORS.textSecondary }]}>
-              {errorBanner.message}
-            </Text>
-          </View>
-          <TouchableOpacity onPress={() => load(true)}>
-            <Ionicons name="refresh" size={18} color={theme.COLORS.error} />
-          </TouchableOpacity>
-        </View>
-      )}
+      {/* Chain filter */}
+      <ScrollView
+        horizontal
+        showsHorizontalScrollIndicator={false}
+        style={styles.chipsWrap}
+        contentContainerStyle={styles.chips}
+      >
+        {[{ id: "all", name: "All networks" }, ...networks].map((c) => {
+          const active = chainFilter === c.id;
+          return (
+            <TouchableOpacity
+              key={String(c.id)}
+              onPress={() => setChainFilter(c.id)}
+              style={[
+                styles.chip,
+                { borderColor: active ? theme.COLORS.primary : theme.COLORS.border },
+                active && { backgroundColor: theme.COLORS.primaryMuted },
+              ]}
+            >
+              {c.icon ? <Image source={{ uri: c.icon }} style={styles.chipIcon} /> : null}
+              <Text style={[styles.chipText, { color: active ? theme.COLORS.text : theme.COLORS.textSecondary }]}>
+                {c.name.replace(" Chain", "")}
+              </Text>
+            </TouchableOpacity>
+          );
+        })}
+      </ScrollView>
 
-      {loading && rows.length === 0 ? (
+      {sections.length === 0 && anyLoading ? (
         <View style={styles.loadingContainer}>
           <ActivityIndicator size="large" color={theme.COLORS.primary} />
           <Text style={styles.loadingText}>Loading tokens…</Text>
         </View>
       ) : (
-        <FlatList
-          data={rows}
-          renderItem={({ item }) => (
-            <TokenRow
-              token={item}
-              chainIcon={activeChain.icon}
-              onToggle={handleToggle}
-              onSend={handleSendToken}
-              onPress={handleTokenPress}
-              toggling={togglingAddr === item.address.toLowerCase()}
-              theme={theme}
-            />
-          )}
-          keyExtractor={(item) => `${item.address.toLowerCase()}-${activeChain.id}`}
+        <SectionList
+          sections={sections}
+          keyExtractor={(item) => item.rowKey}
+          renderItem={renderItem}
+          renderSectionHeader={renderSectionHeader}
+          stickySectionHeadersEnabled
           contentContainerStyle={styles.listContent}
+          initialNumToRender={14}
+          maxToRenderPerBatch={16}
+          windowSize={9}
+          removeClippedSubviews
           ListEmptyComponent={
             <View style={styles.emptyContainer}>
               <View style={[styles.emptyIconContainer, { backgroundColor: theme.COLORS.border }]}>
@@ -511,6 +558,30 @@ const TokensScreen = ({ navigation }) => {
 const createStyles = (theme) =>
   StyleSheet.create({
     container: { flex: 1, backgroundColor: theme.COLORS.background },
+    chipsWrap: { flexGrow: 0 },
+    chips: { paddingHorizontal: 20, paddingBottom: 10, gap: 8 },
+    chip: {
+      flexDirection: "row",
+      alignItems: "center",
+      gap: 6,
+      height: 32,
+      paddingHorizontal: 12,
+      borderRadius: 16,
+      borderWidth: 1,
+      backgroundColor: theme.COLORS.surface,
+    },
+    chipIcon: { width: 16, height: 16, borderRadius: 8 },
+    chipText: { fontSize: 13, fontWeight: "700" },
+    sectionHeader: {
+      flexDirection: "row",
+      alignItems: "center",
+      gap: 8,
+      paddingVertical: 10,
+      paddingHorizontal: 4,
+    },
+    sectionIcon: { width: 20, height: 20, borderRadius: 10 },
+    sectionTitle: { fontSize: 15, fontWeight: "800", color: theme.COLORS.text },
+    sectionMeta: { flex: 1, fontSize: 12, color: theme.COLORS.textTertiary },
     header: {
       flexDirection: "row",
       justifyContent: "space-between",

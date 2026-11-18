@@ -13,7 +13,8 @@
       "backgroundColor": "#000000"
     },
     "ios": {
-      "supportsTablet": true
+      "supportsTablet": true,
+      "bundleIdentifier": "com.awarizon.wallet"
     },
     "android": {
       "versionCode": 1,
@@ -38,7 +39,8 @@
         }
       ],
       "expo-font",
-      "expo-video"
+      "expo-video",
+      "expo-web-browser"
     ],
     "runtimeVersion": {
       "policy": "appVersion"
@@ -52,6 +54,10 @@
         "projectId": "de60bb7e-4611-4138-94c7-08df7a647b1f"
       }
     },
-    "owner": "awarizon"
+    "owner": "awarizon",
+    "scheme": [
+      "rizon",
+      "com.awarizon.wallet"
+    ]
   }
 }

@@ -11,6 +11,7 @@ import { Ionicons } from "@expo/vector-icons";
 import { useTheme } from "../../contexts/ThemeContext";
 import { SPACING, FONTS, BORDER_RADIUS } from "../../constants/Theme";
 import { formatPriceChange } from "../../services/coingecko";
+import { formatUsdValue } from "../../utils/helpers";
 
 const formatNumber = (num, decimals = 2) => {
   if (num === undefined || num === null) return "0.00";
@@ -205,7 +206,9 @@ const AssetCard = ({ asset, onPress }) => {
           <View style={styles.center}>
             <Text style={styles.chainName}>{name}</Text>
             <View style={styles.priceRow}>
-              <Text style={styles.priceText}>${formatNumber(price, 2)}</Text>
+              <Text style={styles.priceText}>
+                {price != null ? `$${formatNumber(price, 2)}` : "Price unavailable"}
+              </Text>
               {priceChange24h !== undefined && priceChange24h !== null && (
                 <View
                   style={[
@@ -241,7 +244,7 @@ const AssetCard = ({ asset, onPress }) => {
 
           {/* ── Balance + sparkline ── */}
           <View style={styles.right}>
-            <Text style={styles.usdValue}>${formatNumber(usdValue, 2)}</Text>
+            <Text style={styles.usdValue}>{formatUsdValue(usdValue)}</Text>
             <Text style={styles.balanceText}>
               {formatNumber(parseFloat(balance), 4)} {chain.symbol}
             </Text>

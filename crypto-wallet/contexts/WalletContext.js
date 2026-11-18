@@ -14,8 +14,14 @@ import {
   createAccountFromMnemonic,
   getBalance,
   getAllBalances,
-  deriveMultipleAccounts,
+  EVM_DERIVATION,
+  getEvmDerivation,
 } from "../utils/Wallet";
+import {
+  getSolBalance,
+  getSolanaKeypairFromMnemonic,
+  getSolanaAddressesForIndices,
+} from "../utils/SolanaService"; // match the file's real name/casing
 import { encryptWallet, decryptWallet } from "../utils/Encryption";
 import { APP_CONFIG } from "../constants/Config";
 import { SUPPORTED_CHAINS } from "../constants/Chain";
@@ -43,8 +49,48 @@ const extractSalt = (localWallet) => {
   return null;
 };
 
+// ── Solana helpers ───────────────────────────────────────────────────────────
+// Design: the Solana *secret key is never stored*. Only the public Solana
+// address is saved on each account (in the same SecureStore record as the EVM
+// address). Keys are derived from the encrypted mnemonic on demand, and
+// anything Solana-related that fails must never block EVM functionality.
+
+const SOLANA_NETWORK_ID = "SOLANA";
+
+// Derive one Solana address, or null on failure (never throws).
+const safeSolanaAddress = (mnemonic, index) => {
+  try {
+    return getSolanaAddressesForIndices(mnemonic, [index])[0];
+  } catch (err) {
+    console.warn(
+      "[WalletContext] Solana address derivation failed:",
+      err.message,
+    );
+    return null;
+  }
+};
+
+// Fill in any missing `solanaAddress` on a list of accounts (public data only).
+// Computes the BIP-39 seed once for all missing accounts. May throw; callers
+// wrap it in try/catch. Returns { accounts, changed }.
+const withSolanaAddresses = (accountList, mnemonic) => {
+  const missing = accountList.filter((a) => !a.solanaAddress);
+  if (missing.length === 0) return { accounts: accountList, changed: false };
+
+  const derived = getSolanaAddressesForIndices(
+    mnemonic,
+    missing.map((a) => a.index ?? 0),
+  );
+
+  let next = 0;
+  const accounts = accountList.map((a) =>
+    a.solanaAddress ? a : { ...a, solanaAddress: derived[next++] },
+  );
+  return { accounts, changed: true };
+};
+
 export const WalletProvider = ({ children }) => {
-  const { activeChain } = useChain();
+  const { activeChain, isSolanaEnabled } = useChain();
 
   // Multi-account state
   const [accounts, setAccounts] = useState([]);
@@ -60,6 +106,26 @@ export const WalletProvider = ({ children }) => {
   const [hasLocalPasscode, setHasLocalPasscode] = useState(false);
   const [address, setAddress] = useState(null);
   const [encryptionProgress, setEncryptionProgress] = useState(null);
+
+  // Solana (kept separate from `balances` so existing code that iterates
+  // EVM chain ids by key is not affected)
+  const [solanaBalanceState, setSolanaBalanceState] = useState(null);
+  const [loadingSolana, setLoadingSolana] = useState(false);
+
+  // Active account's Solana address (null until backfilled on first unlock)
+  const solanaAddress = useMemo(
+    () => accounts[activeAccountIndex]?.solanaAddress || null,
+    [accounts, activeAccountIndex],
+  );
+
+  // Only expose a balance that belongs to the currently active account
+  const solanaBalance = useMemo(
+    () =>
+      solanaBalanceState && solanaBalanceState.address === solanaAddress
+        ? solanaBalanceState
+        : null,
+    [solanaBalanceState, solanaAddress],
+  );
 
   const provider = useMemo(() => {
     if (!activeChain) {
@@ -100,6 +166,31 @@ export const WalletProvider = ({ children }) => {
       loadAllBalances();
     }
   }, [wallet?.address]);
+
+  const loadSolanaBalance = useCallback(
+    async ({ force = false } = {}) => {
+      if (!solanaAddress || !isSolanaEnabled) return;
+      const requestedFor = solanaAddress;
+
+      try {
+        setLoadingSolana(true);
+        const balance = await getSolBalance(requestedFor, { force });
+        // Tagged with its address so a late response for a previous account
+        // is never shown for the current one
+        setSolanaBalanceState({ ...balance, address: requestedFor });
+      } catch (err) {
+        console.error("[WalletContext] Error loading Solana balance:", err);
+      } finally {
+        setLoadingSolana(false);
+      }
+    },
+    [solanaAddress, isSolanaEnabled],
+  );
+
+  // Re-runs when the active Solana address changes or Solana is toggled on
+  useEffect(() => {
+    loadSolanaBalance();
+  }, [loadSolanaBalance]);
 
   const initializeWallet = async () => {
     setCheckingWallet(true);
@@ -173,6 +264,8 @@ export const WalletProvider = ({ children }) => {
     setActiveAccountIndex(0);
     setIsAuthenticated(false);
     setBalances({});
+    setSolanaBalanceState(null);
+    setLoadingSolana(false);
     setHasLocalPasscode(false);
     setCheckingWallet(false);
     setAddress(null);
@@ -208,14 +301,45 @@ export const WalletProvider = ({ children }) => {
       );
 
       // Handle migration from V1/V2 to V3
+      let currentLocalWallet = localWallet;
       if (result.migrated && result.upgradedPayload) {
         console.log("[WalletContext] ✅ Migrating wallet to V3...");
+        currentLocalWallet = {
+          ...localWallet,
+          encrypted: result.upgradedPayload,
+        };
         await SecureStore.setItemAsync(
           APP_CONFIG.STORAGE_KEYS.LOCAL_WALLET,
-          JSON.stringify({
-            ...localWallet,
-            encrypted: result.upgradedPayload,
-          }),
+          JSON.stringify(currentLocalWallet),
+        );
+      }
+
+      // One-time Solana address backfill for wallets created before Solana
+      // support. The mnemonic is only available while unlocked, so this is the
+      // earliest safe moment. Public addresses only, and it can never fail the
+      // unlock: any error here is logged and skipped.
+      try {
+        const mnemonic = result.wallet?.mnemonic;
+        if (mnemonic) {
+          const baseAccounts = Array.isArray(currentLocalWallet.accounts)
+            ? currentLocalWallet.accounts
+            : accounts;
+          const { accounts: filled, changed } = withSolanaAddresses(
+            baseAccounts,
+            mnemonic,
+          );
+          if (changed) {
+            await SecureStore.setItemAsync(
+              APP_CONFIG.STORAGE_KEYS.LOCAL_WALLET,
+              JSON.stringify({ ...currentLocalWallet, accounts: filled }),
+            );
+            setAccounts(filled);
+          }
+        }
+      } catch (backfillErr) {
+        console.warn(
+          "[WalletContext] Solana address backfill skipped:",
+          backfillErr.message,
         );
       }
 
@@ -276,10 +400,22 @@ export const WalletProvider = ({ children }) => {
       }
 
       const activeAccount = accounts[activeAccountIndex];
+      if (!activeAccount) throw new Error("No active account");
       const derivedAccount = createAccountFromMnemonic(
         decryptedData.mnemonic,
-        activeAccount.index,
+        activeAccount.index ?? 0,
+        getEvmDerivation(localWallet),
       );
+
+      // Safety check: never sign with a key that doesn't belong to the
+      // address the user sees for this account
+      if (
+        activeAccount.address &&
+        derivedAccount.address.toLowerCase() !==
+          activeAccount.address.toLowerCase()
+      ) {
+        throw new Error("Derived address does not match the active account");
+      }
 
       let privateKeyHex;
       if (
@@ -313,6 +449,85 @@ export const WalletProvider = ({ children }) => {
     }
   };
 
+  // Solana equivalent of createSignerForTransaction. Returns a web3.js Keypair
+  // for the active account, derived from the encrypted mnemonic on demand.
+  // Use it for one operation and let it go out of scope: don't put it in state.
+  const createSolanaSignerForTransaction = async (passcode) => {
+    try {
+      setEncryptionProgress({ stage: "preparing", progress: 0 });
+
+      const localWalletJson = await SecureStore.getItemAsync(
+        APP_CONFIG.STORAGE_KEYS.LOCAL_WALLET,
+      );
+
+      if (!localWalletJson) throw new Error("No local wallet found");
+
+      const localWallet = JSON.parse(localWalletJson);
+      const salt = extractSalt(localWallet);
+
+      if (!salt) {
+        throw new Error("No salt found in wallet data");
+      }
+
+      const {
+        wallet: decryptedData,
+        migrated,
+        upgradedPayload,
+      } = await decryptWallet(
+        localWallet.encrypted,
+        passcode,
+        salt,
+        (progress) => {
+          setEncryptionProgress({
+            stage: progress.stage,
+            progress: progress.progress,
+          });
+        },
+      );
+
+      // Handle migration from V1/V2 to V3
+      if (migrated && upgradedPayload) {
+        console.log("[WalletContext] ✅ Migrating wallet to V3...");
+        await SecureStore.setItemAsync(
+          APP_CONFIG.STORAGE_KEYS.LOCAL_WALLET,
+          JSON.stringify({
+            ...localWallet,
+            encrypted: upgradedPayload,
+          }),
+        );
+      }
+
+      const activeAccount = accounts[activeAccountIndex];
+      if (!activeAccount) throw new Error("No active account");
+
+      const keypair = getSolanaKeypairFromMnemonic(
+        decryptedData.mnemonic,
+        activeAccount.index,
+      );
+
+      // Safety check: never sign with a key that doesn't belong to the
+      // Solana address the user sees for this account
+      if (
+        activeAccount.solanaAddress &&
+        activeAccount.solanaAddress !== keypair.publicKey.toBase58()
+      ) {
+        throw new Error(
+          "Derived Solana address does not match the active account",
+        );
+      }
+
+      setEncryptionProgress(null);
+      return keypair;
+    } catch (err) {
+      console.error(
+        "[WalletContext] ❌ Error creating Solana signer:",
+        err.message,
+      );
+      setEncryptionProgress(null);
+      throw new Error("Failed to create Solana signer: " + err.message);
+    }
+  };
+
   const lockWallet = () => {
     setIsAuthenticated(false);
   };
@@ -333,6 +548,11 @@ export const WalletProvider = ({ children }) => {
 
   const refreshBalance = useCallback(
     async (chainId = null) => {
+      if (chainId === SOLANA_NETWORK_ID) {
+        await loadSolanaBalance({ force: true });
+        return;
+      }
+
       if (!wallet?.address) return;
 
       try {
@@ -356,12 +576,14 @@ export const WalletProvider = ({ children }) => {
         console.error("[WalletContext] Error refreshing balance:", err);
       }
     },
-    [wallet?.address, activeChain.id],
+    [wallet?.address, activeChain.id, loadSolanaBalance],
   );
 
   const refreshAllBalances = useCallback(async () => {
-    await loadAllBalances();
-  }, [wallet?.address]);
+    // Solana runs alongside EVM; its errors are handled inside
+    // loadSolanaBalance and never affect the EVM refresh
+    await Promise.all([loadAllBalances(), loadSolanaBalance({ force: true })]);
+  }, [wallet?.address, loadSolanaBalance]);
 
   const createWallet = async (localPasscode, walletName = "Main Wallet") => {
     try {
@@ -370,7 +592,9 @@ export const WalletProvider = ({ children }) => {
       setEncryptionProgress({ stage: "generating", progress: 0 });
 
       const mnemonic = generateNewMnemonic();
-      const account = createAccountFromMnemonic(mnemonic, 0);
+      // New wallets use the standard derivation (same addresses as MetaMask).
+      const evmDerivation = EVM_DERIVATION.STANDARD;
+      const account = createAccountFromMnemonic(mnemonic, 0, evmDerivation);
 
       const walletData = {
         mnemonic,
@@ -398,6 +622,9 @@ export const WalletProvider = ({ children }) => {
         address: account.address,
         name: walletName,
         index: 0,
+        // null on failure: wallet creation must not depend on Solana.
+        // The next unlock backfills it.
+        solanaAddress: safeSolanaAddress(mnemonic, 0),
       };
 
       // ✅ Clean storage format - salt is in encrypted object
@@ -406,6 +633,7 @@ export const WalletProvider = ({ children }) => {
         JSON.stringify({
           accounts: [firstAccount],
           activeAccountIndex: 0,
+          evmDerivation,
           encrypted: encryptedPayload,
         }),
       );
@@ -436,17 +664,24 @@ export const WalletProvider = ({ children }) => {
     }
   };
 
+  // `evmDerivation` comes from detectEvmDerivation() (or the user's choice when
+  // it's ambiguous): LEGACY for phrases from older Rizon installs, STANDARD for
+  // MetaMask-style phrases. It must be passed explicitly.
   const importWallet = async (
     mnemonic,
     localPasscode,
     walletName = "Imported Wallet",
+    evmDerivation,
   ) => {
     try {
+      if (!Object.values(EVM_DERIVATION).includes(evmDerivation)) {
+        throw new Error("importWallet: missing EVM derivation");
+      }
       setLoading(true);
       setError(null);
       setEncryptionProgress({ stage: "importing", progress: 0 });
 
-      const account = createAccountFromMnemonic(mnemonic, 0);
+      const account = createAccountFromMnemonic(mnemonic, 0, evmDerivation);
 
       const walletData = {
         mnemonic,
@@ -475,6 +710,7 @@ export const WalletProvider = ({ children }) => {
         address: account.address,
         name: walletName,
         index: 0,
+        solanaAddress: safeSolanaAddress(mnemonic, 0),
       };
 
       // ✅ Clean storage format - salt is in encrypted object
@@ -483,6 +719,7 @@ export const WalletProvider = ({ children }) => {
         JSON.stringify({
           accounts: [firstAccount],
           activeAccountIndex: 0,
+          evmDerivation,
           encrypted: encryptedPayload,
         }),
       );
@@ -508,6 +745,23 @@ export const WalletProvider = ({ children }) => {
     } finally {
       setLoading(false);
     }
+  };
+
+  // Decrypt and return the recovery phrase (for Cloud Backup). The caller
+  // must not keep it beyond the one operation it needs it for.
+  const getMnemonic = async (passcode) => {
+    const localWalletJson = await SecureStore.getItemAsync(
+      APP_CONFIG.STORAGE_KEYS.LOCAL_WALLET,
+    );
+    if (!localWalletJson) throw new Error("No wallet found on this device");
+    const localWallet = JSON.parse(localWalletJson);
+    const { wallet: decrypted } = await decryptWallet(
+      localWallet.encrypted,
+      passcode,
+      extractSalt(localWallet),
+    );
+    if (!decrypted?.mnemonic) throw new Error("This wallet has no recovery phrase");
+    return decrypted.mnemonic;
   };
 
   const addAccount = async (passcode, accountName = null) => {
@@ -556,15 +810,31 @@ export const WalletProvider = ({ children }) => {
       const newAccount = createAccountFromMnemonic(
         decryptedData.mnemonic,
         nextIndex,
+        getEvmDerivation(localWallet),
       );
 
       const accountToAdd = {
         address: newAccount.address,
         name: accountName || `Account ${nextIndex + 1}`,
         index: nextIndex,
+        solanaAddress: safeSolanaAddress(decryptedData.mnemonic, nextIndex),
       };
 
-      const updatedAccounts = [...accounts, accountToAdd];
+      let updatedAccounts = [...accounts, accountToAdd];
+
+      // The mnemonic is available right now, so also fill in any older
+      // accounts still missing a Solana address (best effort)
+      try {
+        updatedAccounts = withSolanaAddresses(
+          updatedAccounts,
+          decryptedData.mnemonic,
+        ).accounts;
+      } catch (backfillErr) {
+        console.warn(
+          "[WalletContext] Solana address backfill skipped:",
+          backfillErr.message,
+        );
+      }
 
       await SecureStore.setItemAsync(
         APP_CONFIG.STORAGE_KEYS.LOCAL_WALLET,
@@ -577,7 +847,7 @@ export const WalletProvider = ({ children }) => {
       setAccounts(updatedAccounts);
       setEncryptionProgress(null);
 
-      return accountToAdd;
+      return updatedAccounts[updatedAccounts.length - 1];
     } catch (err) {
       console.error("[WalletContext] Error adding account:", err);
       setEncryptionProgress(null);
@@ -657,6 +927,11 @@ export const WalletProvider = ({ children }) => {
     return accounts.map((acc) => acc.address);
   };
 
+  // Solana addresses for all accounts that have one
+  const getAllAccountSolanaAddresses = () => {
+    return accounts.map((acc) => acc.solanaAddress).filter(Boolean);
+  };
+
   const clearLocalWallet = async () => {
     try {
       await SecureStore.deleteItemAsync(APP_CONFIG.STORAGE_KEYS.LOCAL_WALLET);
@@ -670,6 +945,19 @@ export const WalletProvider = ({ children }) => {
 
   const getBalanceForChain = useCallback(
     (chainId) => {
+      if (chainId === SOLANA_NETWORK_ID) {
+        return (
+          solanaBalance || {
+            wei: "0",
+            lamports: "0",
+            formatted: "0",
+            symbol: "SOL",
+            chainId,
+            chainName: "Solana",
+          }
+        );
+      }
+
       const chain = Object.values(SUPPORTED_CHAINS).find(
         (c) => c.id === chainId,
       );
@@ -683,7 +971,7 @@ export const WalletProvider = ({ children }) => {
         }
       );
     },
-    [balances],
+    [balances, solanaBalance],
   );
 
   const getActiveChainBalance = useCallback(() => {
@@ -701,6 +989,14 @@ export const WalletProvider = ({ children }) => {
     loading,
     loadingBalances,
     error,
+
+    // Solana
+    solanaAddress,
+    solanaBalance,
+    loadingSolana,
+    hasSolana: !!solanaAddress,
+    createSolanaSignerForTransaction,
+    getAllAccountSolanaAddresses,
 
     // Encryption progress
     encryptionProgress,
@@ -721,6 +1017,7 @@ export const WalletProvider = ({ children }) => {
     // Authentication
     authenticateWithPasscode,
     createSignerForTransaction,
+    getMnemonic,
     lockWallet,
     setIsAuthenticated,
 

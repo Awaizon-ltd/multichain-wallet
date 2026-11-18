@@ -1,0 +1,12 @@
+{
+  "name": "rizon-poster-generator",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "serve": "node batch.js serve",
+    "batch": "node batch.js 20 RIZON launch"
+  },
+  "dependencies": {
+    "playwright": "1.56.1"
+  }
+}

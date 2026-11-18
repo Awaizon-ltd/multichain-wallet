@@ -9,16 +9,31 @@ const {
   getWalletRank,
   getTopPairs,
 } = require("../services/swapTrackingService");
+const {
+  SOLANA_TOKEN_LIST_CHAIN_ID,
+  isSolanaChainId,
+  isValidSolanaAddress,
+  isValidSolanaSignature,
+} = require("../utils/solana");
 
 // ─── Helpers ───────────────────────────────────────────────────────────────
 const TX_HASH_RE = /^0x[a-fA-F0-9]{64}$/;
 const ADDRESS_RE = /^0x[a-fA-F0-9]{40}$/;
 
+// EVM tx hash or Solana signature
 function isValidTxHash(v) {
-  return TX_HASH_RE.test(v);
+  return TX_HASH_RE.test(v) || isValidSolanaSignature(v);
 }
+// EVM or Solana wallet address
 function isValidAddress(v) {
-  return ADDRESS_RE.test(v);
+  return ADDRESS_RE.test(v) || isValidSolanaAddress(v);
+}
+// Solana swaps are stored under 501000101 (fits the INTEGER chain_id column)
+function parseChainId(v) {
+  if (v == null || v === "") return null;
+  if (isSolanaChainId(v)) return SOLANA_TOKEN_LIST_CHAIN_ID;
+  const n = parseInt(v, 10);
+  return isNaN(n) ? null : n;
 }
 function parseIntSafe(v, def) {
   const n = parseInt(v, 10);
@@ -81,7 +96,10 @@ router.post("/record", async (req, res, next) => {
       });
     }
 
-    const result = await recordSwap(req.body);
+    const result = await recordSwap({
+      ...req.body,
+      chain_id: parseChainId(chain_id),
+    });
 
     return res.status(result.duplicate ? 200 : 201).json({
       success: true,
@@ -107,7 +125,7 @@ router.get("/history", async (req, res, next) => {
     }
 
     const result = await getWalletHistory(wallet_address, {
-      chainId: chainId ? parseInt(chainId, 10) : null,
+      chainId: parseChainId(chainId),
       limit: parseIntSafe(limit, 20),
       offset: parseIntSafe(offset, 0),
       from,
@@ -149,7 +167,7 @@ router.get("/leaderboard", async (req, res, next) => {
     const rows = await getLeaderboard({
       from,
       to,
-      chainId: chainId ? parseInt(chainId, 10) : null,
+      chainId: parseChainId(chainId),
       limit: parseIntSafe(limit, 50),
       rankBy: ["volume", "count"].includes(rankBy) ? rankBy : "volume",
     });
@@ -193,7 +211,7 @@ router.get("/top-pairs", async (req, res, next) => {
     const rows = await getTopPairs({
       from,
       to,
-      chainId: chainId ? parseInt(chainId, 10) : null,
+      chainId: parseChainId(chainId),
       limit: parseIntSafe(limit, 10),
     });
 

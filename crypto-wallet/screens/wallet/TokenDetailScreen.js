@@ -17,7 +17,7 @@ import { Ionicons } from "@expo/vector-icons";
 import * as Clipboard from "expo-clipboard";
 import * as Haptics from "expo-haptics";
 import { useTheme } from "../../contexts/ThemeContext";
-import { useChain } from "../../contexts/ChainContext";
+import { useChain, isSolanaChain } from "../../contexts/ChainContext";
 import CoinLogo from "../../components/market/CoinLogo";
 import PriceChart from "../../components/market/PriceChart";
 import {
@@ -353,7 +353,8 @@ export default function TokenDetailScreen({ route, navigation }) {
 
         {/* ── Actions ── */}
         <View style={styles.actions}>
-          {isHolding ? (
+          {/* SendScreen is EVM-only; Solana assets can still be swapped/bridged */}
+          {isHolding && !isSolanaChain(chain) ? (
             <ActionButton
               icon="arrow-up"
               label="Send"

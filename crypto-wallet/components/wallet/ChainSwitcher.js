@@ -1,6 +1,17 @@
 // components/wallet/ChainSwitcher.js
-// Bottom-sheet network picker: search, the connected network up top,
-// featured networks as tiles, then every other network (testnets last).
+// Network picker bottom sheet + the pill button that opens it.
+//
+//   <ChainSelectorButton chain={chain} onPress={open} />
+//   <ChainSwitcher visible onClose chains? selectedChain? onSelect? title? />
+//
+// Default mode switches ChainContext's active (EVM) chain — what the dApp
+// browser uses. Pass `chains` + `selectedChain` + `onSelect` to pick from your
+// own list without touching it (Swap / Advanced Swap do this so Solana can be
+// offered too).
+//
+// Layout: search, then the default networks as a horizontal strip, then
+// "Popular" / "More networks" / "Testnets" — every row showing the user's
+// native balance on that network, so picking a chain to act on is informed.
 import React, { memo, useEffect, useMemo, useRef, useState } from "react";
 import {
   View,
@@ -8,6 +19,7 @@ import {
   StyleSheet,
   Modal,
   FlatList,
+  ScrollView,
   Pressable,
   Image,
   TextInput,
@@ -20,16 +32,23 @@ import { Ionicons } from "@expo/vector-icons";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import * as Haptics from "expo-haptics";
 import { useChain } from "../../contexts/ChainContext";
+import { useWallet } from "../../contexts/WalletContext";
 import { useTheme } from "../../contexts/ThemeContext";
-import { DEFAULT_CHAIN } from "../../constants/Chain";
-
-// Networks shown as large tiles at the top (when not searching)
-const FEATURED_IDS = [DEFAULT_CHAIN.id, 4663, 1, 8453];
+import { DEFAULT_NETWORK_IDS } from "../../constants/Chain";
 
 const SCREEN_H = Dimensions.get("window").height;
 
+// Compact native balance: 0 → "0", tiny → "<0.0001", else ≤ 4 decimals
+const formatBalance = (formatted) => {
+  const n = parseFloat(formatted);
+  if (!n) return "0";
+  if (n < 0.0001) return "<0.0001";
+  if (n >= 1000) return n.toLocaleString(undefined, { maximumFractionDigits: 0 });
+  return n.toLocaleString(undefined, { maximumFractionDigits: 4 });
+};
+
 // ── Chain icon with letter fallback ───────────────────────────────────────────
-const ChainIcon = memo(({ uri, name, size, COLORS }) => {
+export const ChainIcon = memo(({ uri, name, size, COLORS }) => {
   const [failed, setFailed] = useState(false);
   if (!uri || failed) {
     return (
@@ -59,11 +78,71 @@ const ChainIcon = memo(({ uri, name, size, COLORS }) => {
   );
 });
 
-const ChainSwitcher = ({ visible, onClose }) => {
+// ── Trigger button ────────────────────────────────────────────────────────────
+// `compact` = icon + chevron only (tight headers); default shows the name.
+export const ChainSelectorButton = memo(({ chain, onPress, compact = false, style }) => {
+  const { COLORS } = useTheme();
+  return (
+    <Pressable
+      onPress={onPress}
+      hitSlop={6}
+      accessibilityRole="button"
+      accessibilityLabel={`Network: ${chain?.name ?? "none"}. Change network`}
+      style={({ pressed }) => [
+        {
+          flexDirection: "row",
+          alignItems: "center",
+          gap: 6,
+          paddingLeft: 4,
+          paddingRight: 10,
+          height: 34,
+          borderRadius: 17,
+          backgroundColor: COLORS.surface,
+          borderWidth: 1,
+          borderColor: COLORS.border,
+        },
+        pressed && { opacity: 0.75 },
+        style,
+      ]}
+    >
+      <View
+        style={{
+          padding: 2,
+          borderRadius: 14,
+          borderWidth: 1.5,
+          borderColor: COLORS.primary,
+        }}
+      >
+        <ChainIcon uri={chain?.icon} name={chain?.name} size={20} COLORS={COLORS} />
+      </View>
+      {!compact && (
+        <Text
+          numberOfLines={1}
+          style={{ maxWidth: 110, fontSize: 13, fontWeight: "700", color: COLORS.text }}
+        >
+          {chain?.name?.replace(" Chain", "") ?? "Network"}
+        </Text>
+      )}
+      <Ionicons name="chevron-down" size={13} color={COLORS.textSecondary} />
+    </Pressable>
+  );
+});
+
+// ── Sheet ─────────────────────────────────────────────────────────────────────
+const ChainSwitcher = ({
+  visible,
+  onClose,
+  chains: chainsProp,
+  selectedChain,
+  onSelect,
+  title = "Select network",
+}) => {
   const { COLORS } = useTheme();
   const insets = useSafeAreaInsets();
-  const { activeChain, switchChain, getAllChains } = useChain();
-  const chains = getAllChains();
+  const { activeChain: contextChain, switchChain, getAllChains } = useChain();
+  const { getBalanceForChain } = useWallet();
+  const chains = chainsProp ?? getAllChains();
+  const activeChain = selectedChain ?? contextChain;
 
   const [query, setQuery] = useState("");
   const [pendingId, setPendingId] = useState(null);
@@ -111,7 +190,7 @@ const ChainSwitcher = ({ visible, onClose }) => {
     setError(null);
     setPendingId(chain.id);
     try {
-      await switchChain(chain);
+      await (onSelect ? onSelect(chain) : switchChain(chain));
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
       close();
     } catch (e) {
@@ -121,57 +200,77 @@ const ChainSwitcher = ({ visible, onClose }) => {
     }
   };
 
+  const balanceOf = (chain) => {
+    const b = getBalanceForChain?.(chain.id);
+    return b?.formatted != null ? formatBalance(b.formatted) : null;
+  };
+
   // ── List data ───────────────────────────────────────────────────────────────
-  const rows = useMemo(() => {
+  const { featured, rows } = useMemo(() => {
     const q = query.trim().toLowerCase();
     if (q) {
       const hits = chains.filter(
         (c) =>
           c.name.toLowerCase().includes(q) ||
           c.symbol?.toLowerCase().includes(q) ||
-          String(c.id) === q,
+          String(c.id).toLowerCase() === q,
       );
-      return hits.map((c) => ({ type: "row", chain: c, key: `r-${c.id}` }));
+      return {
+        featured: [],
+        rows: hits.map((c) => ({ type: "row", chain: c, key: `r-${c.id}` })),
+      };
     }
 
-    const featured = FEATURED_IDS.map((id) => chains.find((c) => c.id === id)).filter(Boolean);
-    const rest = chains.filter((c) => !FEATURED_IDS.includes(c.id));
-    const mainnets = rest.filter((c) => !c.testnet);
-    const testnets = rest.filter((c) => c.testnet);
+    const isDefault = (c) => DEFAULT_NETWORK_IDS.includes(c.id);
+    const popular = DEFAULT_NETWORK_IDS.map((id) => chains.find((c) => c.id === id)).filter(Boolean);
+    const more = chains.filter((c) => !isDefault(c) && !c.testnet);
+    const testnets = chains.filter((c) => c.testnet);
+    const section = (title, list, key) =>
+      list.length
+        ? [
+            { type: "header", title, key: `h-${key}` },
+            ...list.map((c) => ({ type: "row", chain: c, key: `r-${c.id}` })),
+          ]
+        : [];
 
-    return [
-      ...(featured.length ? [{ type: "featured", chains: featured, key: "featured" }] : []),
-      ...(mainnets.length ? [{ type: "header", title: "All networks", key: "h-all" }] : []),
-      ...mainnets.map((c) => ({ type: "row", chain: c, key: `r-${c.id}` })),
-      ...(testnets.length ? [{ type: "header", title: "Testnets", key: "h-test" }] : []),
-      ...testnets.map((c) => ({ type: "row", chain: c, key: `r-${c.id}` })),
-    ];
+    return {
+      featured: popular,
+      rows: [
+        ...section("Popular", popular, "popular"),
+        ...section("More networks", more, "more"),
+        ...section("Testnets", testnets, "test"),
+      ],
+    };
   }, [chains, query]);
 
   // ── Renderers ───────────────────────────────────────────────────────────────
-  const Tile = ({ chain }) => {
+  const Chip = ({ chain }) => {
     const selected = chain.id === activeChain?.id;
     const pending = chain.id === pendingId;
     return (
       <Pressable
         onPress={() => select(chain)}
         style={({ pressed }) => [
-          styles.tile,
-          selected && styles.tileSelected,
-          pressed && { transform: [{ scale: 0.97 }] },
+          styles.chip,
+          selected && styles.chipSelected,
+          pressed && { transform: [{ scale: 0.96 }] },
         ]}
       >
-        <ChainIcon uri={chain.icon} name={chain.name} size={34} COLORS={COLORS} />
-        <Text style={styles.tileName} numberOfLines={1}>
+        <View style={[styles.chipRing, selected && { borderColor: COLORS.primary }]}>
+          <ChainIcon uri={chain.icon} name={chain.name} size={30} COLORS={COLORS} />
+          {pending ? (
+            <View style={styles.chipBadge}>
+              <ActivityIndicator size="small" color={COLORS.text} />
+            </View>
+          ) : selected ? (
+            <View style={[styles.check, styles.chipBadge]}>
+              <Ionicons name="checkmark" size={10} color="#000" />
+            </View>
+          ) : null}
+        </View>
+        <Text style={styles.chipName} numberOfLines={1}>
           {chain.name.replace(" Chain", "")}
         </Text>
-        {pending ? (
-          <ActivityIndicator size="small" color={COLORS.text} style={styles.tileCorner} />
-        ) : selected ? (
-          <View style={[styles.check, styles.tileCorner]}>
-            <Ionicons name="checkmark" size={11} color="#000" />
-          </View>
-        ) : null}
       </Pressable>
     );
   };
@@ -179,6 +278,7 @@ const ChainSwitcher = ({ visible, onClose }) => {
   const Row = ({ chain }) => {
     const selected = chain.id === activeChain?.id;
     const pending = chain.id === pendingId;
+    const balance = balanceOf(chain);
     return (
       <Pressable
         onPress={() => select(chain)}
@@ -188,50 +288,52 @@ const ChainSwitcher = ({ visible, onClose }) => {
           pressed && !selected && { backgroundColor: COLORS.cardElevated },
         ]}
       >
-        <ChainIcon uri={chain.icon} name={chain.name} size={36} COLORS={COLORS} />
+        <ChainIcon uri={chain.icon} name={chain.name} size={38} COLORS={COLORS} />
         <View style={styles.rowText}>
           <View style={styles.rowTitleLine}>
             <Text style={styles.rowName} numberOfLines={1}>
               {chain.name}
             </Text>
             {chain.testnet ? (
-              <View style={styles.testBadge}>
-                <Text style={styles.testText}>TESTNET</Text>
+              <View style={styles.badge}>
+                <Text style={styles.badgeText}>TESTNET</Text>
+              </View>
+            ) : chain.type === "solana" ? (
+              <View style={styles.badge}>
+                <Text style={styles.badgeText}>SVM</Text>
               </View>
             ) : null}
           </View>
-          <Text style={styles.rowSub}>
-            {chain.symbol} · Chain ID {chain.id}
+          <Text style={styles.rowSub} numberOfLines={1}>
+            {chain.nativeTokenName || chain.symbol}
           </Text>
         </View>
-        {pending ? (
-          <ActivityIndicator size="small" color={COLORS.text} />
-        ) : selected ? (
-          <View style={styles.check}>
-            <Ionicons name="checkmark" size={13} color="#000" />
-          </View>
-        ) : (
-          <View style={styles.radio} />
-        )}
+        <View style={styles.rowRight}>
+          {balance != null && (
+            <Text style={[styles.rowBalance, balance === "0" && { color: COLORS.textTertiary }]}>
+              {balance} <Text style={styles.rowSymbol}>{chain.symbol}</Text>
+            </Text>
+          )}
+          {pending ? (
+            <ActivityIndicator size="small" color={COLORS.text} />
+          ) : selected ? (
+            <View style={styles.check}>
+              <Ionicons name="checkmark" size={13} color="#000" />
+            </View>
+          ) : (
+            <View style={styles.radio} />
+          )}
+        </View>
       </Pressable>
     );
   };
 
-  const renderItem = ({ item }) => {
-    if (item.type === "featured") {
-      return (
-        <View style={styles.tiles}>
-          {item.chains.map((c) => (
-            <Tile key={c.id} chain={c} />
-          ))}
-        </View>
-      );
-    }
-    if (item.type === "header") {
-      return <Text style={styles.sectionTitle}>{item.title}</Text>;
-    }
-    return <Row chain={item.chain} />;
-  };
+  const renderItem = ({ item }) =>
+    item.type === "header" ? (
+      <Text style={styles.sectionTitle}>{item.title}</Text>
+    ) : (
+      <Row chain={item.chain} />
+    );
 
   return (
     <Modal
@@ -256,30 +358,21 @@ const ChainSwitcher = ({ visible, onClose }) => {
 
         {/* Header */}
         <View style={styles.header}>
-          <Text style={styles.title}>Select network</Text>
+          <View style={{ flex: 1 }}>
+            <Text style={styles.title}>{title}</Text>
+            {activeChain ? (
+              <View style={styles.connectedLine}>
+                <View style={styles.dot} />
+                <Text style={styles.connectedText} numberOfLines={1}>
+                  On {activeChain.name}
+                </Text>
+              </View>
+            ) : null}
+          </View>
           <Pressable onPress={close} style={styles.closeBtn} hitSlop={8}>
             <Ionicons name="close" size={20} color={COLORS.text} />
           </Pressable>
         </View>
-
-        {/* Connected network */}
-        {activeChain ? (
-          <View style={styles.current}>
-            <ChainIcon uri={activeChain.icon} name={activeChain.name} size={40} COLORS={COLORS} />
-            <View style={{ flex: 1 }}>
-              <View style={styles.connectedLine}>
-                <View style={styles.dot} />
-                <Text style={styles.connectedText}>Connected</Text>
-              </View>
-              <Text style={styles.currentName} numberOfLines={1}>
-                {activeChain.name}
-              </Text>
-            </View>
-            <View style={styles.symbolPill}>
-              <Text style={styles.symbolText}>{activeChain.symbol}</Text>
-            </View>
-          </View>
-        ) : null}
 
         {/* Search */}
         <View style={styles.search}>
@@ -301,6 +394,20 @@ const ChainSwitcher = ({ visible, onClose }) => {
           ) : null}
         </View>
 
+        {/* Default networks strip */}
+        {featured.length > 0 && (
+          <ScrollView
+            horizontal
+            showsHorizontalScrollIndicator={false}
+            contentContainerStyle={styles.chips}
+            keyboardShouldPersistTaps="handled"
+          >
+            {featured.map((c) => (
+              <Chip key={String(c.id)} chain={c} />
+            ))}
+          </ScrollView>
+        )}
+
         {error ? (
           <View style={styles.error}>
             <Ionicons name="alert-circle" size={15} color={COLORS.error} />
@@ -315,6 +422,7 @@ const ChainSwitcher = ({ visible, onClose }) => {
           keyboardShouldPersistTaps="handled"
           showsVerticalScrollIndicator={false}
           contentContainerStyle={styles.list}
+          initialNumToRender={12}
           ListEmptyComponent={
             <View style={styles.empty}>
               <Ionicons name="globe-outline" size={28} color={COLORS.textTertiary} />
@@ -346,17 +454,20 @@ const makeStyles = (C) =>
       width: 40,
       height: 5,
       borderRadius: 3,
-      backgroundColor: C.borderStrong,
-      marginBottom: 8,
+      backgroundColor: C.borderStrong ?? C.border,
+      marginBottom: 6,
     },
     header: {
       flexDirection: "row",
       alignItems: "center",
-      justifyContent: "space-between",
       paddingHorizontal: 20,
       paddingVertical: 8,
+      gap: 12,
     },
     title: { fontSize: 22, fontWeight: "800", color: C.text, letterSpacing: -0.4 },
+    connectedLine: { flexDirection: "row", alignItems: "center", gap: 6, marginTop: 2 },
+    dot: { width: 7, height: 7, borderRadius: 4, backgroundColor: C.success },
+    connectedText: { fontSize: 12, color: C.textSecondary, fontWeight: "600" },
     closeBtn: {
       width: 36,
       height: 36,
@@ -365,110 +476,85 @@ const makeStyles = (C) =>
       alignItems: "center",
       justifyContent: "center",
     },
-
-    current: {
-      flexDirection: "row",
-      alignItems: "center",
-      gap: 12,
-      marginHorizontal: 16,
-      marginTop: 6,
-      padding: 14,
-      borderRadius: 20,
-      backgroundColor: C.primaryMuted,
-      borderWidth: 1,
-      borderColor: C.primary + "55",
-    },
-    connectedLine: { flexDirection: "row", alignItems: "center", gap: 6 },
-    dot: { width: 7, height: 7, borderRadius: 4, backgroundColor: C.success },
-    connectedText: { fontSize: 12, fontWeight: "700", color: C.textSecondary },
-    currentName: { fontSize: 17, fontWeight: "800", color: C.text, marginTop: 2 },
-    symbolPill: {
-      paddingHorizontal: 10,
-      paddingVertical: 5,
-      borderRadius: 999,
-      backgroundColor: C.background,
-    },
-    symbolText: { fontSize: 12, fontWeight: "800", color: C.text },
-
     search: {
       flexDirection: "row",
       alignItems: "center",
       gap: 8,
-      marginHorizontal: 16,
-      marginTop: 14,
-      marginBottom: 6,
+      marginHorizontal: 20,
+      marginTop: 6,
       paddingHorizontal: 14,
-      height: 46,
-      borderRadius: 14,
+      height: 44,
+      borderRadius: 22,
       backgroundColor: C.surface,
       borderWidth: 1,
       borderColor: C.border,
     },
     searchInput: { flex: 1, fontSize: 15, color: C.text, paddingVertical: 0 },
-
+    chips: { paddingHorizontal: 20, paddingTop: 14, paddingBottom: 4, gap: 10 },
+    chip: {
+      width: 76,
+      alignItems: "center",
+      paddingVertical: 10,
+      borderRadius: 18,
+      backgroundColor: C.surface,
+      borderWidth: 1,
+      borderColor: C.border,
+      gap: 6,
+    },
+    chipSelected: { borderColor: C.primary, backgroundColor: C.primaryMuted },
+    chipRing: {
+      padding: 3,
+      borderRadius: 22,
+      borderWidth: 1.5,
+      borderColor: "transparent",
+    },
+    chipBadge: { position: "absolute", right: -4, bottom: -4 },
+    chipName: { fontSize: 12, fontWeight: "700", color: C.text, maxWidth: 68 },
     error: {
       flexDirection: "row",
       alignItems: "center",
-      gap: 8,
-      marginHorizontal: 16,
-      marginTop: 6,
+      gap: 6,
+      marginHorizontal: 20,
+      marginTop: 10,
       padding: 10,
       borderRadius: 12,
-      backgroundColor: C.error + "14",
+      backgroundColor: `${C.error}14`,
     },
     errorText: { flex: 1, fontSize: 13, color: C.error },
-
-    list: { paddingHorizontal: 16, paddingTop: 8, paddingBottom: 8 },
+    list: { paddingHorizontal: 12, paddingTop: 4, paddingBottom: 8 },
     sectionTitle: {
       fontSize: 12,
       fontWeight: "800",
-      color: C.textTertiary,
+      letterSpacing: 0.6,
       textTransform: "uppercase",
-      letterSpacing: 0.8,
-      marginTop: 16,
-      marginBottom: 8,
-      marginLeft: 4,
+      color: C.textTertiary,
+      paddingHorizontal: 8,
+      paddingTop: 16,
+      paddingBottom: 6,
     },
-
-    tiles: { flexDirection: "row", gap: 8, marginTop: 4 },
-    tile: {
-      flex: 1,
-      alignItems: "center",
-      gap: 8,
-      paddingVertical: 14,
-      paddingHorizontal: 4,
-      borderRadius: 18,
-      backgroundColor: C.surface,
-      borderWidth: 1.5,
-      borderColor: C.border,
-    },
-    tileSelected: { borderColor: C.primary, backgroundColor: C.primaryMuted },
-    tileName: { fontSize: 12, fontWeight: "700", color: C.text, maxWidth: "100%" },
-    tileCorner: { position: "absolute", top: 6, right: 6 },
-
     row: {
       flexDirection: "row",
       alignItems: "center",
       gap: 12,
-      paddingVertical: 11,
-      paddingHorizontal: 12,
+      paddingVertical: 10,
+      paddingHorizontal: 8,
       borderRadius: 16,
-      marginBottom: 4,
-      borderWidth: 1.5,
-      borderColor: "transparent",
     },
-    rowSelected: { backgroundColor: C.primaryMuted, borderColor: C.primary },
+    rowSelected: { backgroundColor: C.primaryMuted },
     rowText: { flex: 1, minWidth: 0 },
-    rowTitleLine: { flexDirection: "row", alignItems: "center", gap: 8 },
+    rowTitleLine: { flexDirection: "row", alignItems: "center", gap: 6 },
     rowName: { fontSize: 15, fontWeight: "700", color: C.text, flexShrink: 1 },
-    rowSub: { fontSize: 12, color: C.textTertiary, marginTop: 2 },
-    testBadge: {
+    rowSub: { fontSize: 12, color: C.textSecondary, marginTop: 2 },
+    rowRight: { flexDirection: "row", alignItems: "center", gap: 10 },
+    rowBalance: { fontSize: 13, fontWeight: "700", color: C.text, fontVariant: ["tabular-nums"] },
+    rowSymbol: { fontSize: 11, fontWeight: "600", color: C.textSecondary },
+    badge: {
       paddingHorizontal: 6,
-      paddingVertical: 1,
+      paddingVertical: 2,
       borderRadius: 6,
-      backgroundColor: C.warning + "22",
+      backgroundColor: C.cardElevated,
     },
-    testText: { fontSize: 9, fontWeight: "800", color: C.warning, letterSpacing: 0.5 },
+    badgeText: { fontSize: 9, fontWeight: "800", letterSpacing: 0.5, color: C.textSecondary },
     check: {
       width: 22,
       height: 22,
@@ -482,10 +568,9 @@ const makeStyles = (C) =>
       height: 22,
       borderRadius: 11,
       borderWidth: 1.5,
-      borderColor: C.borderStrong,
+      borderColor: C.border,
     },
-
-    empty: { alignItems: "center", paddingVertical: 36, gap: 10 },
+    empty: { alignItems: "center", paddingVertical: 40, gap: 8 },
     emptyText: { fontSize: 14, color: C.textSecondary },
   });
 

@@ -6,7 +6,9 @@ module.exports = {
   // SUPPORTED_CHAINS. Chains the app doesn't support were removed here along
   // with their now-orphaned tokens/*.json files (optimism, celo, blast,
   // zksync, worldchain, zora, plus the never-wired goerli/kovan/mumbai/
-  // rinkeby/ropsten/monad/tempo/unichain/xlayer/solana test data).
+  // rinkeby/ropsten/monad/tempo/unichain/xlayer test data).
+  // Solana is keyed by its token-list id (tokens/solana.json uses 501000101);
+  // the app itself calls it "SOLANA" — see utils/solana.js.
   chains: {
     1: "mainnet",
     56: "bnb",
@@ -18,6 +20,7 @@ module.exports = {
     84532: "base-sepolia", // ← Base Sepolia testnet
     5042: "arc",
     4663: "robinhood",
+    501000101: "solana",
   },
 
   // Available token lists
@@ -32,5 +35,6 @@ module.exports = {
     "base-sepolia",
     "arc",
     "robinhood",
+    "solana",
   ],
 };

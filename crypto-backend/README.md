@@ -38,6 +38,8 @@ npm run dev            # nodemon; use `npm start` for a plain node process
 | `LIFI_API_KEY` | LI.FI (cross-chain bridge quotes, and same-chain price aggregation) |
 | `LIFI_INTEGRATOR` | Integrator string LI.FI attributes requests to |
 | `LIFI_FEE_ENABLED` | `1` to include our fee in LI.FI quotes, unset to omit it |
+| `JUPITER_API_KEY` | Jupiter Swap API (Solana same-chain swaps). Optional but recommended for production: without it, requests go to the keyless `lite-api.jup.ag`, whose rate limit is per IP — i.e. shared by every wallet behind this backend |
+| `JUPITER_MAX_PRIORITY_FEE_LAMPORTS` | Cap on the priority fee Jupiter adds to Solana swaps (default `1000000` = 0.001 SOL) |
 
 A `compression` middleware is applied globally in `server.js`, and the swap
 endpoints (`/price`, `/price/best`, `/quote`) are rate-limited — they hit

@@ -1,26 +1,28 @@
-import React, { useEffect, useRef } from "react";
+import React, { useEffect, useRef, useMemo } from "react";
 import { View, Text, StyleSheet, Animated } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
-import Card from "../common/Card";
 import { useTheme } from "../../contexts/ThemeContext";
 import { useChain } from "../../contexts/ChainContext";
 import { SPACING, FONTS, BORDER_RADIUS } from "../../constants/Theme";
 import { formatPriceChange } from "../../services/coingecko";
 
 const formatNumber = (num, decimals = 2) => {
-  if (num === undefined || num === null) return "0.00";
+  if (num === undefined || num === null || isNaN(num)) num = 0;
   return new Intl.NumberFormat("en-US", {
     minimumFractionDigits: decimals,
     maximumFractionDigits: decimals,
   }).format(num);
 };
 
+const shortAddress = (addr) =>
+  addr && addr.length > 12 ? `${addr.slice(0, 6)}…${addr.slice(-4)}` : addr;
+
 const SkeletonBone = ({ width, height, borderRadius = 6, style }) => {
   const { COLORS } = useTheme();
   const shimmer = useRef(new Animated.Value(0)).current;
 
   useEffect(() => {
-    Animated.loop(
+    const loop = Animated.loop(
       Animated.sequence([
         Animated.timing(shimmer, {
           toValue: 1,
@@ -33,12 +35,14 @@ const SkeletonBone = ({ width, height, borderRadius = 6, style }) => {
           useNativeDriver: true,
         }),
       ]),
-    ).start();
-  }, []);
+    );
+    loop.start();
+    return () => loop.stop();
+  }, [shimmer]);
 
   const opacity = shimmer.interpolate({
     inputRange: [0, 1],
-    outputRange: [0.35, 0.7],
+    outputRange: [0.15, 0.35],
   });
 
   return (
@@ -63,169 +67,220 @@ const PortfolioSummary = ({
   loading,
   includesTestnet = false,
   walletAddress,
-  tokenCount = 0, // total number of assets (native chains + ERC-20 tokens)
+  tokenCount = 0, // total number of assets (native chains + tokens)
 }) => {
   const { COLORS } = useTheme();
   const { isProduction } = useChain();
   const change = formatPriceChange(totalChange24h);
+  const hasChange = totalChange24h !== undefined && totalChange24h !== null;
 
-  const styles = StyleSheet.create({
-    container: {
-      paddingHorizontal: SPACING.lg,
-      paddingTop: SPACING.md,
-      paddingBottom: SPACING.lg,
-      marginBottom: SPACING.md,
-      backgroundColor: "transparent",
-      shadowOpacity: 0,
-      elevation: 0,
-      borderWidth: 0,
-    },
-    row: {
-      flexDirection: "row",
-      alignItems: "center",
-      justifyContent: "space-between",
-    },
-    leftSection: { flex: 1, alignItems: "flex-start" },
-    label: {
-      fontSize: FONTS.sizes.xs,
-      color: COLORS.textSecondary,
-      textTransform: "uppercase",
-      letterSpacing: 0.5,
-      marginBottom: 2,
-    },
-    value: {
-      fontSize: FONTS.sizes.xxl,
-      fontWeight: "bold",
-      color: COLORS.text,
-    },
-    subRow: {
-      flexDirection: "row",
-      alignItems: "center",
-      gap: 8,
-      marginTop: 4,
-    },
-    trendIconContainer: { flexDirection: "row", alignItems: "center", gap: 3 },
-    trendLabel: { fontSize: FONTS.sizes.xs, color: COLORS.textSecondary },
-    assetPill: {
-      flexDirection: "row",
-      alignItems: "center",
-      gap: 3,
-      backgroundColor: COLORS.primary + "14",
-      paddingHorizontal: 7,
-      paddingVertical: 2,
-      borderRadius: BORDER_RADIUS.round,
-    },
-    assetPillText: {
-      fontSize: FONTS.sizes.xs,
-      fontWeight: "600",
-      color: COLORS.primary,
-    },
-    rightSection: { alignItems: "flex-end", justifyContent: "center" },
-    changeBig: {
-      fontSize: FONTS.sizes.xxl,
-      fontWeight: "800",
-      letterSpacing: -0.5,
-    },
-    changeSubLabel: {
-      fontSize: FONTS.sizes.xs,
-      color: COLORS.textSecondary,
-      marginTop: 2,
-      textAlign: "right",
-    },
-    skeletonLeft: { gap: 8 },
-    skeletonRight: { alignItems: "flex-end", gap: 8 },
-    testnetBadge: {
-      flexDirection: "row",
-      alignItems: "center",
-      backgroundColor: `${COLORS.warning}20`,
-      paddingHorizontal: SPACING.sm,
-      paddingVertical: SPACING.xs,
-      borderRadius: BORDER_RADIUS.round,
-      marginTop: SPACING.md,
-      alignSelf: "flex-start",
-      gap: 4,
-    },
-    testnetText: {
-      fontSize: FONTS.sizes.xs,
-      color: COLORS.warning,
-      fontWeight: "600",
-    },
-  });
+  // Split "1,234.56" into whole + cents so the cents can be set smaller
+  // A tiny but non-zero total reads "<$0.01" rather than "$0.00"
+  const tiny = totalValue > 0 && totalValue < 0.01;
+  const [whole, cents] = useMemo(() => {
+    if (tiny) return ["0", "01"];
+    const [w, c] = formatNumber(totalValue, 2).split(".");
+    return [w, c];
+  }, [totalValue, tiny]);
+
+  const trendColor = change.isPositive ? COLORS.success : COLORS.error;
+
+  const styles = useMemo(
+    () =>
+      StyleSheet.create({
+        container: {
+          paddingHorizontal: SPACING.md,
+          paddingTop: SPACING.sm,
+          paddingBottom: SPACING.lg,
+          marginBottom: SPACING.sm,
+        },
+        topRow: {
+          flexDirection: "row",
+          alignItems: "center",
+          justifyContent: "space-between",
+          marginBottom: SPACING.xs,
+        },
+        label: {
+          fontSize: FONTS.sizes.sm,
+          fontWeight: "600",
+          color: COLORS.textSecondary,
+        },
+        addressPill: {
+          flexDirection: "row",
+          alignItems: "center",
+          gap: 5,
+          paddingHorizontal: 10,
+          paddingVertical: 4,
+          borderRadius: BORDER_RADIUS.round,
+          backgroundColor: COLORS.surface,
+          borderWidth: 1,
+          borderColor: COLORS.primary + "25",
+        },
+        addressText: {
+          fontSize: FONTS.sizes.xs,
+          fontWeight: "600",
+          color: COLORS.textSecondary,
+        },
+        valueRow: {
+          flexDirection: "row",
+          alignItems: "flex-start",
+        },
+        currency: {
+          fontSize: 22,
+          fontWeight: "700",
+          color: COLORS.textSecondary,
+          marginTop: 6,
+          marginRight: 2,
+        },
+        whole: {
+          fontSize: 46,
+          lineHeight: 54,
+          fontWeight: "800",
+          letterSpacing: -1.5,
+          color: COLORS.text,
+        },
+        cents: {
+          fontSize: 22,
+          fontWeight: "700",
+          color: COLORS.textSecondary,
+          marginTop: 7,
+          marginLeft: 1,
+        },
+        metaRow: {
+          flexDirection: "row",
+          alignItems: "center",
+          flexWrap: "wrap",
+          gap: 8,
+          marginTop: SPACING.sm,
+        },
+        changePill: {
+          flexDirection: "row",
+          alignItems: "center",
+          gap: 4,
+          paddingHorizontal: 10,
+          paddingVertical: 5,
+          borderRadius: BORDER_RADIUS.round,
+          backgroundColor: trendColor + "1F",
+        },
+        changeText: {
+          fontSize: FONTS.sizes.sm,
+          fontWeight: "800",
+          color: trendColor,
+        },
+        metaText: {
+          fontSize: FONTS.sizes.xs,
+          fontWeight: "600",
+          color: COLORS.textSecondary,
+        },
+        assetPill: {
+          flexDirection: "row",
+          alignItems: "center",
+          gap: 4,
+          paddingHorizontal: 10,
+          paddingVertical: 5,
+          borderRadius: BORDER_RADIUS.round,
+          backgroundColor: COLORS.primary + "14",
+        },
+        assetPillText: {
+          fontSize: FONTS.sizes.xs,
+          fontWeight: "700",
+          color: COLORS.primary,
+        },
+        skeletonWrap: { gap: 12, marginTop: 4 },
+        testnetBadge: {
+          flexDirection: "row",
+          alignItems: "center",
+          alignSelf: "flex-start",
+          gap: 4,
+          marginTop: SPACING.md,
+          paddingHorizontal: SPACING.sm,
+          paddingVertical: SPACING.xs,
+          borderRadius: BORDER_RADIUS.round,
+          backgroundColor: `${COLORS.warning}20`,
+        },
+        testnetText: {
+          fontSize: FONTS.sizes.xs,
+          fontWeight: "600",
+          color: COLORS.warning,
+        },
+      }),
+    [COLORS, trendColor],
+  );
 
   return (
-    <Card style={styles.container}>
-      <View style={styles.row}>
-        {/* Left */}
-        <View style={styles.leftSection}>
-          <Text style={styles.label}>Total Portfolio</Text>
-
-          {loading ? (
-            <View style={styles.skeletonLeft}>
-              <SkeletonBone width={160} height={32} borderRadius={8} />
-              <SkeletonBone width={90} height={12} borderRadius={6} />
-            </View>
-          ) : (
-            <>
-              <Text style={styles.value}>${formatNumber(totalValue, 2)}</Text>
-              <View style={styles.subRow}>
-                {totalChange24h !== undefined && totalChange24h !== null && (
-                  <View style={styles.trendIconContainer}>
-                    <Ionicons
-                      name={change.isPositive ? "trending-up" : "trending-down"}
-                      size={13}
-                      color={change.isPositive ? COLORS.success : COLORS.error}
-                    />
-                    <Text style={styles.trendLabel}>24h change</Text>
-                  </View>
-                )}
-                {tokenCount > 0 && (
-                  <View style={styles.assetPill}>
-                    <Ionicons
-                      name="layers-outline"
-                      size={10}
-                      color={COLORS.primary}
-                    />
-                    <Text style={styles.assetPillText}>
-                      {tokenCount} asset{tokenCount !== 1 ? "s" : ""}
-                    </Text>
-                  </View>
-                )}
-              </View>
-            </>
-          )}
-        </View>
-
-        {/* Right */}
-        {loading ? (
-          <View style={styles.skeletonRight}>
-            <SkeletonBone width={80} height={32} borderRadius={8} />
-            <SkeletonBone width={28} height={11} borderRadius={6} />
+    <View style={styles.container}>
+      {/* Label + address */}
+      <View style={styles.topRow}>
+        <Text style={styles.label}>Total balance</Text>
+        {!!walletAddress && (
+          <View style={styles.addressPill}>
+            <Ionicons
+              name="wallet-outline"
+              size={12}
+              color={COLORS.textSecondary}
+            />
+            <Text style={styles.addressText}>
+              {shortAddress(walletAddress)}
+            </Text>
           </View>
-        ) : (
-          totalChange24h !== undefined &&
-          totalChange24h !== null && (
-            <View style={styles.rightSection}>
-              <Text
-                style={[
-                  styles.changeBig,
-                  { color: change.isPositive ? COLORS.success : COLORS.error },
-                ]}
-              >
-                {change.text}
-              </Text>
-              <Text style={styles.changeSubLabel}>24h</Text>
-            </View>
-          )
         )}
       </View>
+
+      {loading ? (
+        <View style={styles.skeletonWrap}>
+          <SkeletonBone width={200} height={44} borderRadius={10} />
+          <View style={{ flexDirection: "row", gap: 8 }}>
+            <SkeletonBone width={84} height={26} borderRadius={13} />
+            <SkeletonBone width={72} height={26} borderRadius={13} />
+          </View>
+        </View>
+      ) : (
+        <>
+          {/* Balance */}
+          <View style={styles.valueRow}>
+            <Text style={styles.currency}>{tiny ? "<$" : "$"}</Text>
+            <Text style={styles.whole} adjustsFontSizeToFit numberOfLines={1}>
+              {whole}
+            </Text>
+            <Text style={styles.cents}>.{cents}</Text>
+          </View>
+
+          {/* Change + asset count */}
+          <View style={styles.metaRow}>
+            {hasChange && (
+              <View style={styles.changePill}>
+                <Ionicons
+                  name={change.isPositive ? "arrow-up" : "arrow-down"}
+                  size={12}
+                  color={trendColor}
+                />
+                <Text style={styles.changeText}>{change.text}</Text>
+              </View>
+            )}
+            {hasChange && <Text style={styles.metaText}>past 24h</Text>}
+            {tokenCount > 0 && (
+              <View style={styles.assetPill}>
+                <Ionicons
+                  name="layers-outline"
+                  size={11}
+                  color={COLORS.primary}
+                />
+                <Text style={styles.assetPillText}>
+                  {tokenCount} asset{tokenCount !== 1 ? "s" : ""}
+                </Text>
+              </View>
+            )}
+          </View>
+        </>
+      )}
 
       {!isProduction && includesTestnet && (
         <View style={styles.testnetBadge}>
           <Ionicons name="flask" size={12} color={COLORS.warning} />
-          <Text style={styles.testnetText}>Includes Testnet</Text>
+          <Text style={styles.testnetText}>Includes testnet</Text>
         </View>
       )}
-    </Card>
+    </View>
   );
 };
 

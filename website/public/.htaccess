@@ -1,0 +1,85 @@
+# Rizon website — Apache config (rizon.awarizon.com)
+# Copied into dist/ by Vite on every build. Upload the *contents* of dist/ to the
+# site's document root, including this hidden file.
+#
+# Routing:
+#   /                 → index.html
+#   /privacy          → privacy/index.html   (with or without the trailing slash)
+#   /privacy.html     → 301 to /privacy
+#   /brand            → brand/index.html     (brand kit)
+#   /brand-design     → 301 to /brand
+#   real files        → served as-is (assets, images, og.png, …)
+#   unknown page URLs → index.html            (no "Page not found" for visitors)
+#   missing files     → normal 404            (a broken image or script never gets HTML back)
+
+Options -Indexes -MultiViews
+DirectoryIndex index.html
+# Serve /privacy without first redirecting to /privacy/ (the rewrite below handles it).
+DirectorySlash Off
+
+<IfModule mod_rewrite.c>
+  RewriteEngine On
+  RewriteBase /
+
+  # 1) Force HTTPS (also works behind proxies / CDNs that set X-Forwarded-Proto).
+  RewriteCond %{HTTPS} !=on
+  RewriteCond %{HTTP:X-Forwarded-Proto} !=https
+  RewriteRule ^ https://%{HTTP_HOST}%{REQUEST_URI} [L,R=301]
+
+  # 2) Old-style .html URL → clean URL.
+  RewriteRule ^privacy\.html$ /privacy [L,R=301]
+  RewriteRule ^brand\.html$ /brand [L,R=301]
+  # /brand-design is an alias of the brand kit.
+  RewriteRule ^brand-design/?$ /brand [L,R=301]
+
+  # 3) Existing files are served directly.
+  RewriteCond %{REQUEST_FILENAME} -f
+  RewriteRule ^ - [L]
+
+  # 4) A folder that has an index.html (e.g. /privacy or /privacy/) → that page.
+  RewriteCond %{REQUEST_FILENAME} -d
+  RewriteCond %{REQUEST_FILENAME}/index.html -f
+  RewriteRule ^(.*?)/?$ $1/index.html [L]
+
+  # 5) Everything else that looks like a page (no file extension) → the homepage.
+  #    Requests for missing files (.js, .png, …) fall through to a real 404.
+  RewriteCond %{REQUEST_URI} !\.[A-Za-z0-9]{1,8}$
+  RewriteRule ^ index.html [L]
+</IfModule>
+
+# Friendly 404 for anything that still isn't found.
+ErrorDocument 404 /index.html
+
+# ---------- correct MIME types ----------
+<IfModule mod_mime.c>
+  AddType image/webp .webp
+  AddType application/javascript .js .mjs
+  AddType font/woff2 .woff2
+</IfModule>
+
+# ---------- compression ----------
+<IfModule mod_deflate.c>
+  AddOutputFilterByType DEFLATE text/html text/css application/javascript application/json image/svg+xml text/plain
+</IfModule>
+
+# ---------- caching ----------
+# Vite's /assets/ files have content hashes in their names → cache for a year.
+# HTML must always be revalidated so visitors get new deploys immediately.
+<IfModule mod_headers.c>
+  <FilesMatch "\.(js|css|woff2)$">
+    Header set Cache-Control "public, max-age=31536000, immutable"
+  </FilesMatch>
+  <FilesMatch "\.(png|webp|jpg|jpeg|svg|ico)$">
+    Header set Cache-Control "public, max-age=604800"
+  </FilesMatch>
+  <FilesMatch "\.html$">
+    Header set Cache-Control "no-cache"
+  </FilesMatch>
+
+  # ---------- security headers ----------
+  Header always set X-Content-Type-Options "nosniff"
+  Header always set Referrer-Policy "strict-origin-when-cross-origin"
+  Header always set X-Frame-Options "SAMEORIGIN"
+  Header always set Permissions-Policy "camera=(), microphone=(), geolocation=()"
+  Header always set Strict-Transport-Security "max-age=31536000; includeSubDomains" env=HTTPS
+</IfModule>

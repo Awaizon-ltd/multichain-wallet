@@ -46,6 +46,22 @@ const MIGRATIONS = [
     verifyTables: ["banners"],
     verifyViews: [],
   },
+  {
+    id: 4,
+    label: "Solana swap tracking (wider address / signature columns)",
+    up: "004_solana_swap_tracking.sql",
+    down: "004_solana_swap_tracking.rollback.sql",
+    verifyTables: ["swap_transactions"],
+    verifyViews: ["swap_leaderboard"],
+  },
+  {
+    id: 5,
+    label: "Wallet identities (username ↔ EVM + Solana, signature-verified)",
+    up: "005_identities.sql",
+    down: "005_identities.rollback.sql",
+    verifyTables: ["identities"],
+    verifyViews: [],
+  },
 ];
 
 // ── CLI args ──────────────────────────────────────────────────────────────

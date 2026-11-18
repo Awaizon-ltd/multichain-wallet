@@ -9,6 +9,8 @@ import {
   TouchableOpacity,
   StyleSheet,
   Image,
+  ScrollView,
+  ActivityIndicator,
 } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import { useTheme } from "../../contexts/ThemeContext";
@@ -134,6 +136,18 @@ const TokenItem = memo(({ token, chainIcon, onSelect, isSelected, theme }) => {
 });
 
 // ─── TokenSelectorModal ───────────────────────────────────────────────────────
+// The token on the other side of the swap. Chain-aware: native ETH on Base
+// and native ETH on Ethereum share an address but are different tokens.
+const isSameAs = (t, other) =>
+  !!other &&
+  t.address === other.address &&
+  (other.chainId == null || t.chainId == null || t.chainId === other.chainId);
+
+/**
+ * Optional multi-chain mode: pass `networks` (chain objects),
+ * `selectedChainId` and `onChainChange(chain)` to show a chain chip row —
+ * the parent loads that chain's `tokens` (set `loading` meanwhile).
+ */
 export const TokenSelectorModal = ({
   visible,
   onClose,
@@ -141,8 +155,12 @@ export const TokenSelectorModal = ({
   tokens = [],
   selectedToken = null,
   excludeToken = null,
-  chainIcon = null,
+  chainIcon: chainIconProp = null,
   title = "Select Token",
+  networks = null,
+  selectedChainId = null,
+  onChainChange = null,
+  loading = false,
 }) => {
   const theme = useTheme();
   const styles = createStyles(theme);
@@ -151,12 +169,13 @@ export const TokenSelectorModal = ({
   const [searchQuery, setSearchQuery] = useState("");
   const [filteredTokens, setFilteredTokens] = useState([]);
 
+  const chainIcon =
+    networks?.find((c) => c.id === selectedChainId)?.icon ?? chainIconProp;
+
   useEffect(() => {
     if (visible) {
       setSearchQuery("");
-      setFilteredTokens(
-        tokens.filter((t) => t.address !== excludeToken?.address),
-      );
+      setFilteredTokens(tokens.filter((t) => !isSameAs(t, excludeToken)));
     }
   }, [visible, tokens, excludeToken]);
 
@@ -164,9 +183,7 @@ export const TokenSelectorModal = ({
     (query) => {
       setSearchQuery(query);
       const q = query.toLowerCase().trim();
-      const available = tokens.filter(
-        (t) => t.address !== excludeToken?.address,
-      );
+      const available = tokens.filter((t) => !isSameAs(t, excludeToken));
       if (!q) {
         setFilteredTokens(available);
         return;
@@ -197,7 +214,7 @@ export const TokenSelectorModal = ({
         token={item}
         chainIcon={chainIcon}
         onSelect={handleSelect}
-        isSelected={selectedToken?.address === item.address}
+        isSelected={!!selectedToken && isSameAs(item, selectedToken)}
         theme={theme}
       />
     ),
@@ -260,7 +277,43 @@ export const TokenSelectorModal = ({
           )}
         </View>
 
+        {/* Chain chips (multi-chain mode) */}
+        {networks?.length > 1 && (
+          <ScrollView
+            horizontal
+            showsHorizontalScrollIndicator={false}
+            contentContainerStyle={styles.chainChips}
+            style={styles.chainChipsWrap}
+            keyboardShouldPersistTaps="handled"
+          >
+            {networks.map((c) => {
+              const active = c.id === selectedChainId;
+              return (
+                <TouchableOpacity
+                  key={String(c.id)}
+                  onPress={() => !active && onChainChange?.(c)}
+                  activeOpacity={0.8}
+                  style={[styles.chainChip, active && styles.chainChipActive]}
+                >
+                  <Image source={{ uri: c.icon }} style={styles.chainChipIcon} />
+                  <Text
+                    style={[styles.chainChipText, active && { color: COLORS.text }]}
+                    numberOfLines={1}
+                  >
+                    {c.name.replace(" Chain", "")}
+                  </Text>
+                </TouchableOpacity>
+              );
+            })}
+          </ScrollView>
+        )}
+
         {/* Token list */}
+        {loading ? (
+          <View style={styles.emptyContainer}>
+            <ActivityIndicator color={COLORS.primary} />
+          </View>
+        ) : (
         <FlatList
           data={filteredTokens}
           keyExtractor={(item) => item.address}
@@ -275,6 +328,7 @@ export const TokenSelectorModal = ({
           windowSize={10}
           removeClippedSubviews
         />
+        )}
       </View>
     </Modal>
   );
@@ -286,6 +340,28 @@ const createStyles = (theme) => {
 
   return StyleSheet.create({
     container: { flex: 1, backgroundColor: COLORS.background },
+
+    // Chain chips
+    chainChipsWrap: { flexGrow: 0 },
+    chainChips: {
+      paddingHorizontal: SPACING.lg,
+      paddingBottom: SPACING.sm,
+      gap: SPACING.xs,
+    },
+    chainChip: {
+      flexDirection: "row",
+      alignItems: "center",
+      gap: 6,
+      height: 34,
+      paddingHorizontal: 12,
+      borderRadius: 17,
+      backgroundColor: COLORS.surface,
+      borderWidth: 1,
+      borderColor: COLORS.border,
+    },
+    chainChipActive: { borderColor: COLORS.primary, backgroundColor: COLORS.primaryMuted },
+    chainChipIcon: { width: 18, height: 18, borderRadius: 9 },
+    chainChipText: { fontSize: 13, fontWeight: "700", color: COLORS.textSecondary },
 
     // Header
     header: {
